@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=NFiles
+Comment=Explorador de archivos de Nexora
+Exec=/usr/bin/NFiles
+Icon=NFiles
+Terminal=false
+Type=Application
+Categories=Utility;FileTools;
+StartupWMClass=NFiles
