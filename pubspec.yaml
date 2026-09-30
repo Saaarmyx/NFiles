@@ -1,0 +1,45 @@
+name: NFiles
+description: "Explorador de archivos de Nexora Labs. Capa de UI migrada desde NPhotos."
+# Evita publicar el paquete accidentalmente en pub.dev.
+publish_to: 'none'
+
+# Version calendario Nexora: AA.MM.DD-canal
+# (26.09.28-release | 26.09.28-debug | 26.09.28-beta)
+version: 26.09.28-release+1
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Design system compartido de Nexora Labs (mismo kit que NPhotos).
+  NexoraUi:
+    path: ../NexoraUi
+  # Núcleo compartido con el resto de apps Nexora: idioma, permisos,
+  # perfiles de rendimiento, y también el dominio de archivos (catálogo,
+  # escáner, tipos y operaciones) con el motor nativo en Rust detrás de la
+  # frontera de FFI. Antes venía de `NexoraFs`, que ya no existe.
+  NexoraCore:
+    path: ../NexoraCore
+  # Delegados de Material traducidos: los aporta la app, no el kit.
+  flutter_localizations:
+    sdk: flutter
+  permission_handler: ^11.3.1
+  path: ^1.9.0
+  shared_preferences: ^2.5.5
+  share_plus: ^13.3.0
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  exif: ^3.3.0
+  path_provider: ^2.1.6
+  device_info_plus: ^13.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
