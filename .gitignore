@@ -1,0 +1,224 @@
+# ============================================================
+# .gitignore para Flutter - NFiles / Nexora
+# Cobertura: Dart/Flutter, Android, Linux, Web,
+# SO (macOS / Windows / Linux) y editores (VS Code, IntelliJ)
+# ============================================================
+
+# ------------------------------
+# 1. Flutter / Dart / Pub
+# ------------------------------
+# Generados por el tooling de Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+.packages
+
+# Salidas de build
+/build/
+coverage/
+
+# Documentación generada
+**/doc/api/
+
+# Preview de widgets
+.widget_preview/
+
+# Archivos de simbolización y ofuscación
+app.*.symbols
+app.*.map.json
+
+# pubspec.lock: NO ignorar en apps (sí en paquetes).
+# Si esto fuera un paquete, descomenta:
+# pubspec.lock
+
+# .metadata y versionado de plugins: se versionan a propósito
+# .metadata
+# .flutter-plugins-dependencies -> ya ignorado arriba
+
+# ------------------------------
+# 2. Android (Gradle / Studio)
+# ------------------------------
+# Build outputs
+/android/app/debug
+/android/app/profile
+/android/app/release
+/android/build/
+**/build/
+
+*.class
+*.dex
+*.apk
+*.aab
+*.ap_
+*.aabinfo
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+local.properties
+
+# Firmas - NUNCA commitear keys reales
+android/key.properties
+*.jks
+*.keystore
+*.p12
+
+# NDK / CMake
+.externalNativeBuild/
+.cxx/
+obj/
+*.so
+
+# Android Studio / IntelliJ
+*.iml
+*.ipr
+*.iws
+.idea/
+captures/
+output.json
+
+# ------------------------------
+# 3. Linux (Flutter desktop / CMake)
+# ------------------------------
+/linux/flutter/ephemeral/
+linux/build/
+snapcraft-parts/
+*.snap
+*.deb
+*.rpm
+*.AppImage
+
+# ------------------------------
+# 4. Web
+# ------------------------------
+# Si sirves web/ localmente, ignora el build (ya cubierto por /build/)
+# Descomenta si generas archivos puntuales:
+# /web/build/
+
+# ------------------------------
+# 5. Nexora / NFiles - específico del proyecto
+# ------------------------------
+# Salidas por canal: compilaciones/apk|deb/release|beta|debug/
+compilaciones/
+/packaging/output/
+
+# Logs y temporales del proyecto
+*.log
+migrate_working_dir/
+.build/
+.buildlog/
+
+# ------------------------------
+# 6. Sistema Operativo
+# ------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+
+# Windows
+Thumbs.db
+Thumbs.db:encdata
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+*.url
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+.fuse_*
+.hidden
+
+# ------------------------------
+# 7. Editores y IDEs
+# ------------------------------
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.history/
+
+# JetBrains (Android Studio / IntelliJ)
+out/
+.idea_modules/
+
+# Vim / Neovim
+*.swp
+*.swo
+*.swn
+*~
+[nN]etrw[Hh]istory
+.tags
+*.orig
+Session.vim
+.netrwhist
+tags
+
+# Emacs
+*~
+\#*\#
+.\#*
+.cask/
+.projectile
+.dir-locals.el
+
+# Sublime Text
+*.tmlanguage.cache
+*.tmPreferences.cache
+*.stTheme.cache
+*.sublime-workspace
+*.sublime-project
+
+# Atom
+.atom/
+
+# ------------------------------
+# 8. Otros / Misceláneo
+# ------------------------------
+# Python (scripts auxiliares)
+*.pyc
+*.pyo
+__pycache__/
+.venv/
+venv/
+.env
+
+# Subversion
+.svn/
+
+# GPG / Secrets genéricos (no commitear)
+*.pem
+*.key
+secrets.json
+.env.local
+.env.*.local
