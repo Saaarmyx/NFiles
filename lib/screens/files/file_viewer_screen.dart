@@ -8,27 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../controllers/files_controller.dart';
 import '../../models/file_model.dart';
-
-/// Confirma una acción destructiva (mover a la papelera).
-///
-/// Se reimplementa aquí en vez de importarse de otra pantalla: antes vivía
-/// en el grid de papelera, que ya no existe, y colgar el visor de un widget
-/// de otra pantalla era una dependencia sin sentido.
-Future<bool> confirmDestructive(
-  BuildContext context, {
-  required String title,
-  required String message,
-  IconData? icon,
-}) {
-  return showNConfirmDialog(
-    context,
-    title: title,
-    message: message,
-    confirmLabel: 'Eliminar',
-    isDestructive: true,
-    icon: icon,
-  );
-}
+import '../../utils/confirm_destructive.dart';
 
 /// Nombres de mes en español para la cabecera del visor.
 const _kMonthsEs = [
@@ -271,6 +251,7 @@ class _FileViewerScreenState extends State<FileViewerScreen> {
                           onDelete: () async {
                             final confirmed = await confirmDestructive(
                               context,
+                              controller: widget.controller,
                               title: 'Mover a la papelera',
                               message:
                                   '“${currentFile.title}” se moverá a la papelera. Podrás restaurarla desde Álbumes.',
