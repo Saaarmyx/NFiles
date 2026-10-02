@@ -39,11 +39,11 @@ NFiles/
 │   │   ├── file_model.dart        # FileModel inmutable + formatBytes()
 │   │   └── explore_section.dart   # Secciones del explorador por categoría
 │   ├── screens/
-│   │   ├── recent/recent_screen.dart
+│   │   ├── recent/recents_screen.dart  # RecentsScreen (cards NRecentFileCard)
 │   │   ├── explore/explore_screen.dart
-│   │   ├── category/category_screen.dart
+│   │   ├── listing/file_listing_screen.dart  # Vista base: lista/grid + orden
 │   │   ├── files/file_viewer_screen.dart
-│   │   └── settings/              # nfiles_settings/about/permissions_screen.dart
+│   │   └── settings/              # settings (ajustes), about, permissions, vault
 │   ├── services/
 │   │   ├── file_service.dart      # Escaneo por raíces (Android/Linux) + isolate
 │   │   ├── local_store.dart       # Snapshot, favoritos, papelera, orígenes privados
@@ -73,8 +73,9 @@ NFiles/
 
 **Servicios:**
 
-- `FileService({roots, useIsolate})` — `loadFiles()`, `existingRoots()`; raíces Android vs Ubuntu; `imageExtensions` / `videoExtensions` / `supportedExtensions`; sonda de metadatos solo para imágenes.
-- `LocalStore` — `load()`, `loadSnapshot()/saveSnapshot()`, `favoriteIds()/saveFavoriteIds()`, `trashedAt()/saveTrashed()`, `privateOrigins()/savePrivateOrigins()`, `applyAppearance()`.
+- `FileService({roots, useIsolate, showHidden})` — `loadFiles()`, `existingRoots()`, `withHidden(bool)`; raíces Android vs Ubuntu; `imageExtensions` / `videoExtensions` / `supportedExtensions`; sonda de metadatos solo para imágenes. `showHidden` enciende los `.` (archivos y carpetas del sistema) y solo se aplica si el barrido se pide con él.
+- `LocalStore` — `load()`, `loadSnapshot()/saveSnapshot()`, `favoriteIds()/saveFavoriteIds()`, `trashedAt()/saveTrashed()`, `privateOrigins()/savePrivateOrigins()`, `applyAppearance()`, `prefs` (el `SharedPreferences` crudo) y `viewPrefs`.
+- `FilesViewPrefs` — persiste `FilesViewState` con prefijo `nfiles_view_`: `sort`, `view_mode`, `filter`, `explore_view_mode`, `default_view_mode`, `default_sort_field`, `sort_direction`, `show_hidden_files`, `show_file_extensions`, `thumbnails_wifi_only`, `confirm_delete`, `auto_empty_trash_days`. `load()` restaura el bloque de golpe; `attach(controller)` guarda con 250 ms de debounce.
 - `PrivateVault(dir)` — `files()`, `moveIn(File)`, `moveOut(path, targetDir)`; directorio `getApplicationSupportDirectory()/private`.
 - `MediaProbe` — lectura EXIF/dimensiones delegada a `MediaIndexService` de `NexoraCore`.
 
@@ -82,15 +83,18 @@ NFiles/
 
 - Estados `FilesState {initial, permissionDenied, loading, loaded, error}` + `fetchFiles({silent})`, `refresh()`, `refreshSilent()`, `hydrateFromCache()`.
 - Filtros topbar: `FilesSort {captureDay, addedDay}`, `FilesViewMode {byDate, compact}`, `FilesFilter {all, camera}`, búsqueda `setSearchQuery()`, derivados `visibleFiles`, `visibleGroups`.
-- Categorías por `FileKind`: `imageFiles`, `documentFiles`, `musicFiles`, `apkFiles`, `archiveFiles`, `otherFiles`; por carpeta: `downloadFiles`, `cameraFiles`, `screenshotFiles`, `recorderFiles`; `filesOfKind(kind)`, `filesInFolderNamed(names)`.
+- Categorías por `FileKind`: `imageFiles`, `documentFiles`, `musicFiles`, `apkFiles`, `archiveFiles`, `otherFiles`; por carpeta: `downloadFiles`, `cameraFiles`, `screenshotFiles`, `recorderFiles`, `instagramFiles`, `whatsappFiles`; `filesOfKind(kind)`, `filesInFolderNamed(names)`; favoritos unidos con NPhotos (`FavoritesService`, `favoriteUnion`).
 - Papelera + lote: `moveToTrash/restoreFromTrash/deletePermanently/emptyTrash` y variantes `*Batch`, `toggleFavorite(s)`.
 - Bóveda: `privateFiles`, `loadPrivate()`, `moveToPrivate(id)`, `restoreFromPrivate(id)`.
-- Motor nativo: `FsScannerRegistry engines`, `ThumbsService thumbs`, `MediaIndexService media`, `applyPerformanceProfile()`, `requestThumbnails(paths, {boxPx})`, `countMedia()`, `groupByDay()`; `startWatching({debounce})` con anti-solape `_fetching`.
+- Ajustes (los de la pantalla, con sus setters): `categoryLayout`, `listingField`, `listingDirection`, `showHiddenFiles`, `showFileExtensions`, `thumbnailsWifiOnly`, `confirmDelete`, `autoEmptyTrashDays`; `FilesViewState.of(c)/.fresh()` y `restoreViewState(state)`. Los dos con efecto real: `thumbnailsWifiOnly` corta el prerrellenado por scroll (`ensureThumbnails` no llama al motor; lo ya generado se sigue usando y `generateThumbnail(path)` es la demanda explícita que no se niega), y `confirmDelete` lo lee `confirmDestructive(context, controller: …)`, que devuelve `true` sin abrir nada cuando está apagado.
+- Motor nativo: `FsScannerRegistry engines`, `ThumbsService thumbs`, `MediaIndexService media`, `applyPerformanceProfile()`, `ensureThumbnails(paths)`, `generateThumbnail(path)`, `thumbnailFor(path)`, `countMedia()`, `groupByDay()`, `clearThumbnailCache()`; `startWatching({debounce})` con anti-solape `_fetching`.
 
 **Widgets y pantallas:**
 
-- Pantallas: `NFilesHome` (tabs `Recientes`/`Explorar` + `NMobileLayout`), `RecentScreen`, `ExploreScreen`, `CategoryScreen` (`CategoryLayout {list, grid}`, `CategorySort {az, za}`), `FileViewerScreen` (media_kit), `NFilesSettingsScreen`, `NFilesAboutScreen`, `NFilesPermissionsScreen`.
-- Widgets: `FileTile`, `FileRow`, `DayHeader`, `buildRecentPopupItems()` / `buildExplorePopupItems()`, acciones `_TransferAction` / `_SpaceAction` / `_SpaceSheet`.
+- Pantallas: `NFilesHome` (tabs `Recientes`/`Explorar` + `NMobileLayout`), `RecentsScreen` (cards `NRecentFileCard` del kit), `ExploreScreen` (cuatro bloques; **una categoría con 0 elementos no se pinta**, y si un grupo se queda sin filas tampoco pinta su título; sin archivos se dice con un aviso en vez de dejar la pantalla a medias), `FileListingScreen` (vista base de carpetas y categorías: lista `NRecentFileCard` o cuadrícula `NGridFileCard`, orden `ListingSortField` + `SortDirection` desde `FolderViewSettingsPopup`), `FileViewerScreen` (media_kit), `NFilesSettingsScreen`, `NFilesAboutScreen`, `NFilesPermissionsScreen`.
+- Ajustes: `NFilesSettingsScreen` (una sola pantalla: delega en `NSettingsScreen` del kit e inyecta `NFilesFilesSettingsContent` por `extraBlocks`, sin pantalla intermedia) con los tres grupos **Visualización**, **Almacenamiento y miniaturas**, **Seguridad y papelera**; `NFilesVaultScreen` (carpeta segura). Sufijos del kit: switch plano en booleanos (`NOptionTile.toggle`), chevron en lo que abre selector o navega, `NCheckmark` en la opción activa del selector. El contenido es una columna, no una lista: vive dentro del `ListView` de Ajustes.
+- `confirmDestructive(context, controller:, title:, message:)` en `lib/utils/` pregunta por `showNConfirmDialog` (o sea `showNModal`) solo si `confirmDelete` está activo.
+- Widgets: `FileTile`, `FileRow`, `DayHeader` (`"Fecha • N elementos"` + colapso), `NRecentFileCard` (icono o miniatura + `peso • origen`) y `NGroupedCardContainer` (tarjeta por día, en el kit) en `RecentsScreen`; `buildRecentPopupItems()` (`MODO DE VISTA` + `AJUSTES`: Cuenta, Configuración) / `buildExplorePopupItems()`.
 
 ## 4. Guía de Uso Rápido
 
