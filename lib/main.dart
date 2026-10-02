@@ -28,7 +28,9 @@ Future<void> main() async {
   final prefs = await CorePrefs.open(kNFilesPrefsNamespace);
   final locale = await CoreLocale.open(prefs);
   final performance = await CorePerformance.open(prefs);
-  final permissions = CorePermissions();
+  // Set de gestor de archivos: base + "todos los archivos". Sin el último
+  // la pantalla de permisos no lo muestra y el usuario no puede activarlo.
+  final permissions = CorePermissions(permissions: filesPermissions());
 
   // ─── App ───
   final store = await LocalStore.load();

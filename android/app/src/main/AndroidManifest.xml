@@ -3,12 +3,29 @@
     <!-- Permisos para Android.
          El explorador los necesita para leer DCIM/Pictures/Download:
          sin ellos `permission_handler` nunca concede acceso y la UI cae
-         siempre en FilesState.permissionDenied. -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+         siempre en FilesState.permissionDenied.
+         MANAGE_EXTERNAL_STORAGE ("Acceso a todos los archivos", Android
+         11+) es el que abre TODO el almacenamiento: documentos,
+         descargas y Android/media. Sin él solo se ven medios y las
+         categorías de documentos/comprimidos/APK salen vacías. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Permisos que `CorePermissions` declara en NexoraCore pero que el
+         manifiesto no pedia. Sin declararlos aqui Android los deniega en
+         silencio: `status()` devuelve `denied` para siempre y el usuario
+         ve un permiso que no puede activar de ninguna manera. -->
+
+    <!-- GPS de los metadatos EXIF (`mediaLocationPermission`). -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
+    <!-- Ubicacion del dispositivo (`locationPermission`). -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
         android:label="NFiles"
