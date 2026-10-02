@@ -5,7 +5,7 @@ publish_to: 'none'
 
 # Version calendario Nexora: AA.MM.DD-canal
 # (26.09.28-release | 26.09.28-debug | 26.09.28-beta)
-version: 26.09.28-release+1
+version: 26.10.01-release+202
 
 environment:
   sdk: ^3.13.4

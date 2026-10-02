@@ -7,14 +7,14 @@ packages:
       path: "../NexoraCore"
       relative: true
     source: path
-    version: "26.09.28"
+    version: "26.10.01"
   NexoraUi:
     dependency: "direct main"
     description:
       path: "../NexoraUi"
       relative: true
     source: path
-    version: "26.09.28"
+    version: "26.10.01"
   archive:
     dependency: transitive
     description:
