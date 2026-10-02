@@ -7,9 +7,11 @@
 // perder el trabajo de navegación lateral, no porque sea la experiencia
 // actual.
 //
-// Las dos pantallas tienen lupa y popup, pero el popup es DISTINTO en cada
-// una (ver [_recentPopupItems] y [_explorePopupItems]): no es un menú
-// genérico, son dos herramientas distintas.
+// Cada pantalla tiene SU topbar: Recientes (nombre + lupa + popup de vista
+// y ajustes) y Explorar (nombre + popup de vista/orden + ajustes). El popup
+// es DISTINTO en cada una (ver [buildRecentPopupItems] y
+// [buildExplorePopupItems]): no es un menú genérico, son dos herramientas
+// distintas.
 import 'package:flutter/material.dart';
 import 'package:NexoraCore/NexoraCore.dart';
 import 'package:NexoraUi/NexoraUi.dart';
@@ -17,7 +19,7 @@ import 'package:NexoraUi/NexoraUi.dart';
 import '../controllers/files_controller.dart';
 import '../services/local_store.dart';
 import '../screens/explore/explore_screen.dart';
-import '../screens/recent/recent_screen.dart';
+import '../screens/recent/recents_screen.dart';
 import '../screens/settings/nfiles_settings_screen.dart';
 import '../widgets/nfiles_popup.dart';
 
@@ -116,11 +118,25 @@ class _NFilesHomeState extends State<NFilesHome> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controller = widget.controller ?? FilesController();
-    // Si nos pasan un controlador ya cargado no lo re-escaneamos: sus
-    // datos son tan válidos como los que acabaríamos de leer, y un
-    // segundo escaneo solo provocaría un parpadeo de carga.
+    // El popup se lee del almacén antes de que la UI se suscriba, y a
+    // partir de ahí se guarda solo en cada cambio.
+    widget.store?.applyViewPreferences(_controller);
+    // Arranque instantáneo: primero la BD local (<50ms, sin disco) y el
+    // espacio vía `statvfs` (µs); el diff incremental por `mtime` corre
+    // después en segundo plano sin `loading` ni parpadeo.
     if (_controller.state != FilesState.loaded) {
-      _controller.fetchFiles();
+      _controller.hydrateFromCache().then((_) {
+        if (!mounted) return;
+        // Si la hidratación llenó la grilla, solo sincroniza lo cambiado;
+        // si no (primer arranque), escaneo completo como antes.
+        if (_controller.files.isNotEmpty) {
+          _controller.syncIncrementalBackground();
+        } else {
+          _controller.fetchFiles();
+        }
+      });
+    } else {
+      _controller.loadStorage();
     }
     // Recarga dinámica: los archivos nuevos aparecen solos, sin recompilar.
     _controller.startWatching();
@@ -148,7 +164,20 @@ class _NFilesHomeState extends State<NFilesHome> with WidgetsBindingObserver {
         permissions: widget.permissions,
         locale: widget.locale,
         performance: widget.performance,
+        // Los ajustes de archivos cuelgan del mismo controller que ya
+        // tiene el layout: es el que guarda y el que lee en cada fila.
+        controller: _controller,
       ),
+    );
+  }
+
+  void _openAccount() {
+    // La cuenta vive en NCloud desde que su pantalla tiene sitio propio
+    // (perfil, cuota, recomendaciones y apps). `NAccountScreen` ya no
+    // existe en el kit: era el mismo contenido con otro nombre.
+    pushNPage(
+      context,
+      NCloudScreen(profile: nFilesProfileData),
     );
   }
 
@@ -157,108 +186,32 @@ class _NFilesHomeState extends State<NFilesHome> with WidgetsBindingObserver {
     final isRecent = _selectedIndex == kRecentTab;
 
     return NMobileLayout(
-      title: 'NFiles',
+      // Título por destino: izquierda el nombre de la pantalla activa.
+      title: isRecent ? 'Recientes' : 'Explorar',
       // `pages` (no `body`): el drag sobre la bottom bar desplaza las
       // pantallas con snap y no reinicia cada destino al volver a él.
       pages: [
-        RecentScreen(controller: _controller),
+        RecentsScreen(controller: _controller),
         ExploreScreen(controller: _controller),
       ],
       currentIndex: _selectedIndex,
       onNavigationIndexChanged: (i) => setState(() => _selectedIndex = i),
       navigationItems: _navItems,
       onRefresh: _controller.refresh,
-      onSearchChanged: _controller.setSearchQuery,
-      onSearchClosed: () => _controller.setSearchQuery(''),
-      searchHint: isRecent ? 'Buscar archivos' : 'Buscar en Explorar',
+      // Recientes: lupa para buscar archivos. Explorar: sin búsqueda.
+      onSearchChanged: isRecent ? _controller.setSearchQuery : null,
+      onSearchClosed: isRecent ? () => _controller.setSearchQuery('') : null,
+      searchHint: 'Buscar archivos',
+      // Explorar: acceso directo a ajustes. Recientes lo lleva en el popup.
+      onSettingsPressed: isRecent ? null : _openSettings,
       // El popup depende de la pantalla activa: no es un menú único.
       extraPopupMenuItems: isRecent
-          ? buildRecentPopupItems(context, _controller, _openSettings)
+          ? buildRecentPopupItems(
+              _controller,
+              _openAccount,
+              _openSettings,
+            )
           : buildExplorePopupItems(_controller),
-      extraActions: [const _TransferAction(), const _SpaceAction()],
-    );
-  }
-}
-
-/// Acción de la topbar: transferir archivos.
-///
-/// Contrato declarado, sin backend todavía: la fila de "Transferencias"
-/// del popup es el sitio donde enchufar la cola real. Se muestra el estado
-/// vacío en vez de un botón que no hace nada.
-class _TransferAction extends StatelessWidget {
-  const _TransferAction();
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.swap_vert_circle_outlined),
-      tooltip: 'Transferir archivos',
-      onPressed: () => _showPending(context),
-    );
-  }
-
-  void _showPending(BuildContext context) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(content: Text('Transferencias: sin cola activa')),
-      );
-  }
-}
-
-/// Acción de la topbar: espacio usado.
-class _SpaceAction extends StatelessWidget {
-  const _SpaceAction();
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      icon: const Icon(Icons.storage_outlined),
-      tooltip: 'Espacio',
-      onPressed: () => showNSheet(
-        context,
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        child: const _SpaceSheet(),
-      ),
-    );
-  }
-}
-
-/// Hoja de espacio: lo ocupado por la app, con el total real del escaneo.
-class _SpaceSheet extends StatelessWidget {
-  const _SpaceSheet();
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(NSpacing.spaceMd),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const NSheetHandle(),
-            const SizedBox(height: NSpacing.spaceMd),
-            const NSheetTitle('Espacio'),
-            const SizedBox(height: NSpacing.spaceMd),
-            NCloudStorageCard(
-              usedGb: 0,
-              totalGb: 0,
-              appsUsage: const [],
-            ),
-            const SizedBox(height: NSpacing.spaceMd),
-            Text(
-              'Los totales por categoría se calculan sobre el escaneo '
-              'completo; se rellenan al indexar el dispositivo.',
-              style: TextStyle(
-                fontFamily: NTypography.fontFamilyBase,
-                fontSize: NTypography.sizeXs,
-                color: context.nMutedTextColor,
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
