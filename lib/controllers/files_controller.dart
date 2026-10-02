@@ -1,5 +1,6 @@
 // lib/controllers/files_controller.dart
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -11,9 +12,13 @@ import 'package:permission_handler/permission_handler.dart';
 // perfil de rendimiento (CorePerformance) viven en el MISMO paquete: el motor
 // nativo en Rust pasó de NexoraFs a NexoraCore, así que basta un import.
 import 'package:NexoraCore/NexoraCore.dart';
+import '../models/directory_entry.dart';
+import '../models/file_filter.dart';
 import '../models/file_model.dart';
 import '../services/local_store.dart';
 import '../services/file_service.dart';
+import '../services/favorites_service.dart';
+import '../services/native_index.dart';
 import '../services/private_vault.dart';
 
 enum FilesState { initial, permissionDenied, loading, loaded, error }
@@ -30,11 +35,28 @@ enum FilesFilter { all, camera }
 /// Cómo se ve la lista de "Explorar": plana o por grupos.
 enum ExploreViewMode { compact, grouped }
 
-/// Cómo se ven los archivos dentro de una categoría: lista o cuadrícula.
-enum CategoryLayout { list, grid }
+/// Cómo se ve una lista de archivos: en lista o en cuadrícula.
+///
+/// Este enum sustituye a [CategoryLayout], que significaba exactamente lo
+/// mismo con otro nombre. La migración es transparente en el disco porque la
+/// persistencia guarda el `name` del valor —`list` o `grid`— y esos nombres
+/// no cambian: un usuario que tenía `grid` guardado sigue teniendo `grid`.
+enum FileViewMode { list, grid }
 
-/// Orden alfabético dentro de una categoría.
-enum CategorySort { az, za }
+/// Nombre anterior de [FileViewMode].
+///
+/// Se conserva como alias para no romper a quien aún lo escriba. Es un
+/// *alias de tipo*, no un enum aparte: `CategoryLayout.list` y
+/// `FileViewMode.list` son el MISMO valor, así que no puede aparecer el error
+/// de comparar dos enums distintos que nunca son iguales, que es lo que
+/// habría pasado de haber creado un enum nuevo sin más.
+typedef CategoryLayout = FileViewMode;
+
+/// Campo por el que se ordena un listado de archivos.
+enum ListingSortField { name, size, modified, kind }
+
+/// Dirección de la ordenación.
+enum SortDirection { asc, desc }
 
 class TrashedFile {
   final FileModel file;
@@ -47,9 +69,114 @@ class TrashedFile {
 ///
 /// [id] es `album:<dirPath>` para carpetas reales o `__videos__`,
 /// `__trash__`, `__favorites__` para listas sintéticas.
+/// Estado completo del popup de la topbar (⋮), en una sola pieza.
+///
+/// Vive aquí y no en el servicio de persistencia para evitar un ciclo:
+/// el servicio necesita los enums del controller, así que si el estado
+/// viviera allí el controller no podría importarlo.
+@immutable
+class FilesViewState {
+  final FilesSort sort;
+  final FilesViewMode viewMode;
+  final FilesFilter filter;
+  final ExploreViewMode exploreViewMode;
+  final CategoryLayout categoryLayout;
+  final ListingSortField listingField;
+  final SortDirection listingDirection;
+  final bool showHiddenFiles;
+  final bool showFileExtensions;
+  final bool thumbnailsWifiOnly;
+  final bool confirmDelete;
+  final int autoEmptyTrashDays;
+
+  const FilesViewState({
+    required this.sort,
+    required this.viewMode,
+    required this.filter,
+    required this.exploreViewMode,
+    required this.categoryLayout,
+    required this.listingField,
+    required this.listingDirection,
+    required this.showHiddenFiles,
+    required this.showFileExtensions,
+    required this.thumbnailsWifiOnly,
+    required this.confirmDelete,
+    required this.autoEmptyTrashDays,
+  });
+
+  /// Defaults de fábrica: lo que ve alguien que abre la app por primera.
+  /// Nombre ascendente, como el antiguo A→Z: cambiar de modelo no reordena
+  /// lo que el usuario ya tenía.
+  const FilesViewState.fresh()
+      : sort = FilesSort.captureDay,
+        viewMode = FilesViewMode.byDate,
+        filter = FilesFilter.all,
+        exploreViewMode = ExploreViewMode.compact,
+        categoryLayout = CategoryLayout.list,
+        listingField = ListingSortField.name,
+        listingDirection = SortDirection.asc,
+        showHiddenFiles = false,
+        showFileExtensions = true,
+        thumbnailsWifiOnly = false,
+        confirmDelete = true,
+        autoEmptyTrashDays = 30;
+
+  /// Lo que hay ahora mismo en el controller.
+  factory FilesViewState.of(FilesController c) => FilesViewState(
+        sort: c.sort,
+        viewMode: c.viewMode,
+        filter: c.filter,
+        exploreViewMode: c.exploreViewMode,
+        categoryLayout: c.categoryLayout,
+        listingField: c.listingField,
+        listingDirection: c.listingDirection,
+        showHiddenFiles: c.showHiddenFiles,
+        showFileExtensions: c.showFileExtensions,
+        thumbnailsWifiOnly: c.thumbnailsWifiOnly,
+        confirmDelete: c.confirmDelete,
+        autoEmptyTrashDays: c.autoEmptyTrashDays,
+      );
+
+  /// Claves de almacenamiento. Se guardan enums por su `.name`.
+  Map<String, Object?> toMap() => {
+        'sort': sort,
+        'view_mode': viewMode,
+        'filter': filter,
+        'explore_view_mode': exploreViewMode,
+        'default_view_mode': categoryLayout,
+        'default_sort_field': listingField,
+        'sort_direction': listingDirection,
+        'show_hidden_files': showHiddenFiles,
+        'show_file_extensions': showFileExtensions,
+        'thumbnails_wifi_only': thumbnailsWifiOnly,
+        'confirm_delete': confirmDelete,
+        'auto_empty_trash_days': autoEmptyTrashDays,
+      };
+}
+
 class FilesController extends ChangeNotifier {
   final FileService _fileService;
   LocalStore? _store;
+
+  /// Unión de favoritos (locales + NPhotos) de la última carga.
+  ///
+  /// La resuelve [FavoritesService]: lo de NPhotos entra con mejor esfuerzo
+  /// y lo local siempre. Expuesta para que Explorar decida si "Favoritos"
+  /// merece fila en Acceso Rápido.
+  Set<String> _favoriteUnion = const {};
+  Set<String> get favoriteUnion => _favoriteUnion;
+
+  final FavoritesService _favorites;
+
+  /// Índice nativo persistente (redb). Inyectable para tests.
+  final NativeFileIndex _nativeIndex;
+
+  /// Espacio del punto de montaje (vía `statvfs`, microsegundos).
+  ///
+  /// `null` sin motor o si el FS no responde: la UI muestra entonces la
+  /// suma del escaneo como respaldo.
+  StorageInfo? _storage;
+  StorageInfo? get storage => _storage;
 
   /// Directorio de la carpeta privada. Solo para tests; en producción
   /// se resuelve vía `path_provider` (soporte de la app).
@@ -83,6 +210,7 @@ class FilesController extends ChangeNotifier {
   void setSort(FilesSort value) {
     if (_sort == value) return;
     _sort = value;
+    _invalidateVisible();
     notifyListeners();
   }
 
@@ -104,11 +232,14 @@ class FilesController extends ChangeNotifier {
   ExploreViewMode _exploreViewMode = ExploreViewMode.compact;
   ExploreViewMode get exploreViewMode => _exploreViewMode;
 
-  CategoryLayout _categoryLayout = CategoryLayout.list;
-  CategoryLayout get categoryLayout => _categoryLayout;
+  FileViewMode _layout = FileViewMode.list;
+  FileViewMode get categoryLayout => _layout;
 
-  CategorySort _categorySort = CategorySort.az;
-  CategorySort get categorySort => _categorySort;
+  ListingSortField _listingField = ListingSortField.name;
+  ListingSortField get listingField => _listingField;
+
+  SortDirection _listingDirection = SortDirection.asc;
+  SortDirection get listingDirection => _listingDirection;
 
   void setExploreViewMode(ExploreViewMode value) {
     if (_exploreViewMode == value) return;
@@ -116,28 +247,344 @@ class FilesController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setCategoryLayout(CategoryLayout value) {
-    if (_categoryLayout == value) return;
-    _categoryLayout = value;
+  void setCategoryLayout(FileViewMode value) {
+    if (_layout == value) return;
+    _layout = value;
     notifyListeners();
   }
 
-  void setCategorySort(CategorySort value) {
-    if (_categorySort == value) return;
-    _categorySort = value;
+  // ─── Ajustes de NFiles (pantalla de ajustes) ──────────────────────────
+  //
+  // Se persisten con las claves `default_view_mode`, `show_hidden_files`,
+  // etc. (ver `FilesViewPrefs`). Todos los setters notifican, así que el
+  // guardado con debounce del `attach` no puede perderse ninguno.
+
+  /// Mostrar archivos y carpetas ocultos (los que empiezan por `.`).
+  ///
+  /// Al cambiar se reescanea: el índice actual se construyó sin ellos y
+  /// filtrarlos en memoria sería mentir sobre lo que hay en disco.
+  bool _showHiddenFiles = false;
+  bool get showHiddenFiles => _showHiddenFiles;
+
+  void setShowHiddenFiles(bool value) {
+    if (_showHiddenFiles == value) return;
+    _showHiddenFiles = value;
+    notifyListeners();
+    unawaited(fetchFiles());
+  }
+
+  /// Mostrar la extensión en los títulos (`informe.pdf` vs `informe`).
+  bool _showFileExtensions = true;
+  bool get showFileExtensions => _showFileExtensions;
+
+  void setShowFileExtensions(bool value) {
+    if (_showFileExtensions == value) return;
+    _showFileExtensions = value;
     notifyListeners();
   }
 
-  /// Ordena por nombre según [categorySort] (A→Z o Z→A).
+  /// Generar miniaturas solo con Wi-Fi.
+  ///
+  /// Hoy el motor de miniaturas es local (Rust, sin red), así que no hay
+  /// tráfico que ahorrar: lo que el ajuste controla es el **trabajo en
+  /// segundo plano**. Con el ajuste encendido se deja de pedir el
+  /// prerrellenado por scroll ([ensureThumbnails]): las fichas se pintan
+  /// con el icono de familia y la miniatura solo aparece si ya estaba en
+  /// la caché de disco, que es el trabajo que se puede pausar sin romper
+  /// nada.
+  ///
+  /// Es el punto donde entrará la comprobación de red real cuando las
+  /// miniaturas seResolution desde NCloud; el consumidor (el servicio)
+  /// no cambia cuando llegue.
+  bool _thumbnailsWifiOnly = false;
+  bool get thumbnailsWifiOnly => _thumbnailsWifiOnly;
+
+  void setThumbnailsWifiOnly(bool value) {
+    if (_thumbnailsWifiOnly == value) return;
+    _thumbnailsWifiOnly = value;
+    // El mapa en memoria es la caché de esta sesión: si se apaga el
+    // ajuste, las miniaturas ya generadas se siguen usando. Al activarlo
+    // no se borra nada, solo deja de pedir más.
+    notifyListeners();
+  }
+
+  /// Pedir confirmación antes de un borrado definitivo.
+  ///
+  /// La UI de borrado aún no tiene diálogos de confirmación, así que el
+  /// flag se persiste y se expone para cuando los haya. El valor por
+  /// defecto (`true`) es el comportamiento que se espera entonces.
+  bool _confirmDelete = true;
+  bool get confirmDelete => _confirmDelete;
+
+  void setConfirmDelete(bool value) {
+    if (_confirmDelete == value) return;
+    _confirmDelete = value;
+    notifyListeners();
+  }
+
+  /// Vaciar la papelera automáticamente a los N días. `0` = nunca.
+  int _autoEmptyTrashDays = 30;
+  int get autoEmptyTrashDays => _autoEmptyTrashDays;
+
+  void setAutoEmptyTrashDays(int value) {
+    if (_autoEmptyTrashDays == value) return;
+    _autoEmptyTrashDays = value;
+    notifyListeners();
+  }
+
+  // -- Navegacion por directorio -----------------------------------------
+  //
+  // El indice global (`_files`) y el directorio actual son DOS cosas, y no
+  // se mezclan a proposito: `visibleFiles` alimenta Recientes, Explorar y el
+  // visor de archivos, asi que si `navigateTo` sustituyera `_files` por los
+  // archivos de un subdirectorio, al entrar en una carpeta dejarian de verse
+  // los demas archivos de todo el almacenamiento. Ese fallo no aparece en los
+  // tests de navegacion, que mirarian solo lo recien escaneado.
+
+  /// Archivos del directorio actual. Vacio mientras no se ha entrado en uno.
+  List<FileModel> _currentDirFiles = const [];
+
+  /// Carpetas del directorio actual.
+  ///
+  /// Van en una lista aparte y no mezcladas con los archivos porque se
+  /// comportan distinto: no se abren en el visor, no se comparten, no tienen
+  /// tamano, y en la rejilla se pintan con un componente que no es el de una
+  /// imagen. Metidas en `_currentDirFiles` acabarian triesndo a abrirse.
+  List<DirectoryEntry> _currentDirFolders = const [];
+
+  /// Ruta del directorio en el que se esta. `null` = vista global.
+  String? _currentPath;
+
+  /// Pila de directorios visitados, del mas reciente al mas antiguo.
+  final List<String> _history = [];
+
+  /// Ruta del directorio actual, o `null` si se esta en la vista global.
+  String? get currentPath => _currentPath;
+
+  /// Historial de navegacion, del mas reciente al mas antiguo.
+  ///
+  /// Copia defensiva: si quien lo lee lo mutara, el estado interno se
+  /// corromperia sin que ninguna asercion lo detectara.
+  List<String> get navigationHistory => List.unmodifiable(_history);
+
+  /// `true` si se ha entrado en algun directorio.
+  bool get isBrowsingDirectory => _currentPath != null;
+
+  /// Carpetas del directorio actual, ordenadas por nombre.
+  ///
+  /// El orden lo pone aqui y no el motor: `read_dir` devuelve en el orden que
+  /// el sistema de archivos quiera, que cambia entre dispositivos y entre
+  /// ejecuciones. Una lista de carpetas que se reordena sola al abrirla es
+  /// desconcertante.
+  List<DirectoryEntry> get currentFolders {
+    final lista = [..._currentDirFolders];
+    lista.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return lista;
+  }
+
+  /// Archivos de la vista de navegacion.
+  ///
+  /// Con un directorio abierto, los de ese directorio; sin el, el indice
+  /// global ya filtrado. Nunca los dos mezclados: una categoria abierta
+  /// dentro de una carpeta no puede mostrar los archivos de las demas.
+  List<FileModel> get browsableFiles =>
+      _currentPath == null ? visibleFiles : _currentDirFiles;
+
+  /// Entra en [path], escaneandolo si hace falta.
+  ///
+  /// [path] vacio o `null` vuelve a la vista global, que es lo que hace el
+  /// primer chip del breadcrumb cuando el mapa de raices no lo cubre.
+  ///
+  /// No lanza si la carpeta no existe o no se puede leer: deja la lista vacia
+  /// y el breadcrumb apuntando donde se le pidio, que es el mismo resultado
+  /// visual que una carpeta vacia. Lanzar desde aqui tiraria la pantalla
+  /// entera por un `ENOENT`, y en un explorador el destino lo elige el
+  /// usuario pero la carpeta puede desaparecer entre el tap y el escaneo.
+  Future<void> navigateTo(String? path) async {
+    // Ruta vacia = volver a la vista global. Se distingue de "carpeta que no
+    // existe" justamente para que el breadcrumb pueda ofrecer esa opcion.
+    if (path == null || path.trim().isEmpty) {
+      _currentPath = null;
+      _currentDirFiles = const [];
+      _currentDirFolders = const [];
+      notifyListeners();
+      return;
+    }
+
+    final destino = _normalize(path);
+    if (destino == _currentPath) return;
+
+    _currentPath = destino;
+    _currentDirFiles = const [];
+    _currentDirFolders = const [];
+    _recordHistory(destino);
+    notifyListeners();
+
+    try {
+      // `StorageService.listDirectory` y no `FileService`: el primero lista
+      // las entradas INMEDIATAS y devuelve tambien las carpetas, mientras que
+      // el segundo recorre en profundidad y solo devuelve archivos. Con el
+      // segundo no habia forma de drill-down, porque las carpetas no
+      // aparecian nunca en la lista.
+      final entries = _directoryLister(destino);
+      // La navegacion pudo cambiar mientras listaba: si el usuario salto a
+      // otro sitio con el breadcrumb, un resultado viejo no debe pisar la
+      // vista nueva.
+      if (_currentPath != destino) return;
+      _currentDirFolders = [
+        for (final e in entries)
+          if (e.type == EntryType.directory) _aCarpeta(e),
+      ];
+      _currentDirFiles = [
+        for (final e in entries)
+          if (e.type != EntryType.directory) _aModelo(e),
+      ];
+    } catch (e) {
+      debugPrint('No se pudo entrar en $destino: $e');
+      if (_currentPath == destino) {
+        _currentDirFiles = const [];
+        _currentDirFolders = const [];
+      }
+    }
+    if (_currentPath == destino) notifyListeners();
+  }
+
+  /// Convierte una entrada nativa en carpeta.
+  DirectoryEntry _aCarpeta(FileEntry e) => DirectoryEntry.fromNative(e);
+
+  /// Convierte una entrada nativa en [FileModel].
+  FileModel _aModelo(FileEntry e) => FileModel(
+        id: e.path,
+        path: e.path,
+        title: e.name,
+        dateCreated: e.created ?? e.modified,
+        dateModified: e.modified,
+        sizeInBytes: e.size,
+        isFavorite: false,
+        isVideo: e.kind == FileKind.video,
+      );
+
+  /// Sube un nivel. `false` si ya estaba en la raiz y no hay adonde ir.
+  Future<bool> navigateUp() async {
+    if (_currentPath == null) return false;
+    // Volver a la vista global en vez de quedarse en un `..` sin resolver:
+    // `navigateTo` trata la ruta vacia como la raiz, que es lo que el
+    // breadcrumb entiende.
+    await navigateTo(_parentOf(_currentPath!));
+    return true;
+  }
+
+  /// Quita la barra final, que haria que la misma carpeta se alcanzara por
+  /// dos rutas distintas y por tanto con dos entradas de historial.
+  static String _normalize(String path) =>
+      path.endsWith('/') && path.length > 1
+          ? path.substring(0, path.length - 1)
+          : path;
+
+  /// Ancestro de [path], o `null` si ya esta en la raiz.
+  ///
+  /// Devolver `null` en vez de `/` es lo que hace que `navigateUp` termine en
+  /// la vista global: una barra de breadcrumbs con la raiz repetida dos
+  /// veces ("Raiz > Raiz") es ruido.
+  static String? _parentOf(String path) {
+    final corte = _normalize(path).lastIndexOf('/');
+    if (corte <= 0) return null;
+    return _normalize(path).substring(0, corte);
+  }
+
+  /// Apunta el historial sin duplicar la entrada repetida.
+  void _recordHistory(String path) {
+    _history.remove(path);
+    _history.insert(0, path);
+    // El historial no crece sin limite: una sesion larga explorando puede
+    // llegar a cientos de entradas y ninguna se consulta a mas de unas pocas.
+    if (_history.length > _maxHistory) {
+      _history.removeRange(_maxHistory, _history.length);
+    }
+  }
+
+  /// Cuantas entradas de navegacion se recuerdan.
+  static const int _maxHistory = 32;
+
+  /// Listado de un directorio, sustituible en tests.
+  ///
+  /// Existia antes un `debugSetUseIsolateForScans` que apagaba el isolate del
+  /// escaneo porque `compute` no completa bajo el reloj falso de
+  /// `testWidgets`. Ya no hace falta: `listDirectory` es sincrono y no usa
+  /// isolate, y eso es justo lo que lo hace utilizable desde un test de
+  /// widget sin trucos.
+  static List<FileEntry> _defaultLister(String path) =>
+      StorageService.listDirectory(path);
+
+  List<FileEntry> Function(String) _directoryLister = _defaultLister;
+
+  /// Fija el listado de directorios. Pensado para tests.
+  void debugSetDirectoryLister(List<FileEntry> Function(String) lister) {
+    _directoryLister = lister;
+  }
+
+
+  /// Restaura de golpe todo el estado del popup **sin** notificar.
+  ///
+  /// Se llama al arrancar, antes de que la UI se suscriba: notificar
+  /// ahí solo provocaría un repintado de una pantalla que aún no existe.
+  void restoreViewState(FilesViewState state) {
+    _sort = state.sort;
+    _viewMode = state.viewMode;
+    _filter = state.filter;
+    _exploreViewMode = state.exploreViewMode;
+    _layout = state.categoryLayout;
+    _listingField = state.listingField;
+    _listingDirection = state.listingDirection;
+    _showHiddenFiles = state.showHiddenFiles;
+    _showFileExtensions = state.showFileExtensions;
+    _thumbnailsWifiOnly = state.thumbnailsWifiOnly;
+    _confirmDelete = state.confirmDelete;
+    _autoEmptyTrashDays = state.autoEmptyTrashDays;
+    // Los ajustes de pantalla affects lo derivado (ocultos cambia el
+    // escaneo, el resto no), pero la lista puede venir cacheada de antes
+    // de la restauración.
+    _invalidateVisible();
+  }
+
+  void setListingField(ListingSortField value) {
+    if (_listingField == value) return;
+    _listingField = value;
+    _invalidateCaches();
+    notifyListeners();
+  }
+
+  void setListingDirection(SortDirection value) {
+    if (_listingDirection == value) return;
+    _listingDirection = value;
+    _invalidateCaches();
+    notifyListeners();
+  }
+
+  /// Ordena según [listingField] y [listingDirection].
   ///
   /// Sobre una copia: la lista original va por fecha y la usan otras
-  /// pantallas.
-  List<FileModel> applyCategorySort(List<FileModel> files) {
+  /// pantallas. El desempate es por nombre para que el orden sea total y
+  /// no dependa del orden de llegada del escaneo.
+  List<FileModel> sortListing(List<FileModel> files) {
     final list = List<FileModel>.of(files);
-    list.sort((a, b) {
-      final cmp = a.title.toLowerCase().compareTo(b.title.toLowerCase());
-      return _categorySort == CategorySort.az ? cmp : -cmp;
-    });
+    int byField(FileModel a, FileModel b) {
+      final cmp = switch (_listingField) {
+        ListingSortField.name =>
+          a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+        ListingSortField.size => a.sizeInBytes.compareTo(b.sizeInBytes),
+        ListingSortField.modified =>
+          a.dateModified.compareTo(b.dateModified),
+        ListingSortField.kind =>
+          kindForPath(a.path).index.compareTo(kindForPath(b.path).index),
+      };
+      if (cmp != 0) return cmp;
+      return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    }
+
+    list.sort((a, b) => _listingDirection == SortDirection.asc
+        ? byField(a, b)
+        : byField(b, a));
     return list;
   }
 
@@ -145,6 +592,7 @@ class FilesController extends ChangeNotifier {
     final q = value.trim().toLowerCase();
     if (_searchQuery == q) return;
     _searchQuery = q;
+    _invalidateVisible();
     notifyListeners();
   }
 
@@ -158,36 +606,98 @@ class FilesController extends ChangeNotifier {
   }
 
   /// Archivos visibles agrupadas por día (orden desc). Para modo "Por fecha".
+  ///
+  /// Memoizado sobre la instancia vigente de [visibleFiles]: reagrupar en
+  /// cada build es un paseo O(N) con un DateTime por archivo que no aporta
+  /// nada si los datos no cambiaron.
   Map<DateTime, List<FileModel>> get visibleGroups {
-    final groups = <DateTime, List<FileModel>>{};
-    for (final p in visibleFiles) {
-      groups.putIfAbsent(dayKeyOf(p), () => []).add(p);
+    final source = visibleFiles;
+    if (!identical(source, _groupsSource) || _cachedGroups == null) {
+      final groups = <DateTime, List<FileModel>>{};
+      for (final p in source) {
+        groups.putIfAbsent(dayKeyOf(p), () => []).add(p);
+      }
+      final keys = groups.keys.toList()..sort((a, b) => b.compareTo(a));
+      _cachedGroups = {for (final k in keys) k: groups[k]!};
+      _groupsSource = source;
     }
-    final keys = groups.keys.toList()..sort((a, b) => b.compareTo(a));
-    return {for (final k in keys) k: groups[k]!};
+    return _cachedGroups!;
   }
+
+  List<FileModel>? _groupsSource;
+  Map<DateTime, List<FileModel>>? _cachedGroups;
+
+  // -- Criterios de la barra de filtros -----------------------------------
+  //
+  // Extensión, fecha y tamaño. NO se persisten a propósito: son de "lo que
+  // estoy mirando ahora", no una preferencia. Si volvieran al reinicio, un
+  // filtro de "PDF de hoy" ocultaría el almacenamiento entero al día
+  // siguiente sin que nadie lo hubiera pedido.
+
+  FileFilter _criteria = FileFilter.none;
+  FileFilter get criteria => _criteria;
+
+  void setCriteria(FileFilter value) {
+    if (identical(_criteria, value)) return;
+    _criteria = value;
+    _invalidateVisible();
+    notifyListeners();
+  }
+
+  void toggleExtensionFilter(String ext) =>
+      setCriteria(_criteria.toggleExtension(ext));
+
+  void clearCriteria() => setCriteria(FileFilter.none);
 
   /// Archivos tras aplicar filtro (todos / cámara), búsqueda y orden.
   /// Es lo que pinta la grilla principal.
+  ///
+  /// Memoizado e inmutable: el orden O(N log N) se paga una vez por cambio
+  /// de datos o de criterio, no una vez por build. Como las pantallas
+  /// reconstruyen en cada notificación (p. ej. al llegar miniaturas),
+  /// recalcular aquí la ordenación era un tirón por frame con bibliotecas
+  /// grandes. Se devuelve vista no modificable: quien necesite otro orden
+  /// usa [sortListing], que copia.
   List<FileModel> get visibleFiles {
-    Iterable<FileModel> list = _files;
-    if (_filter == FilesFilter.camera) {
-      // Filtro por CARPETA, no por el viejo álbum de cámara (eliminado
-      // con la pantalla de Álbumes). Mismo criterio que Expl › Cámara.
-      list = list.where(
-        (f) => cameraFolderNames.contains(f.folderName.toLowerCase()),
-      );
+    var cached = _cachedVisible;
+    if (cached == null) {
+      Iterable<FileModel> list = _files;
+      if (_filter == FilesFilter.camera) {
+        // Filtro por CARPETA, no por el viejo álbum de cámara (eliminado
+        // con la pantalla de Álbumes). Mismo criterio que Expl › Cámara.
+        list = list.where(
+          (f) => cameraFolderNames.contains(f.folderName.toLowerCase()),
+        );
+      }
+      if (_searchQuery.isNotEmpty) {
+        list = list.where(
+          (p) =>
+              p.title.toLowerCase().contains(_searchQuery) ||
+              p.path.toLowerCase().contains(_searchQuery),
+        );
+      }
+      // Los chips de la barra de filtros van aquí y no en la pantalla: es el
+      // mismo `where` sobre `_files` que el resto de criterios, y meterlo
+      // en el `itemBuilder` pagaría el paseo completo por cada ficha que
+      // se pintara.
+      final criterios = _criteria;
+      if (!criterios.isEmpty) {
+        list = list.where(criterios.matches);
+      }
+      final sorted = list.toList()
+        ..sort((a, b) => _sortKey(b).compareTo(_sortKey(a)));
+      cached = _cachedVisible = UnmodifiableListView(sorted);
     }
-    if (_searchQuery.isNotEmpty) {
-      list = list.where(
-        (p) =>
-            p.title.toLowerCase().contains(_searchQuery) ||
-            p.path.toLowerCase().contains(_searchQuery),
-      );
-    }
-    final sorted = list.toList()
-      ..sort((a, b) => _sortKey(b).compareTo(_sortKey(a)));
-    return sorted;
+    return cached;
+  }
+
+  UnmodifiableListView<FileModel>? _cachedVisible;
+
+  /// Invalida lo derivado de [_files], criterio de orden y búsqueda.
+  void _invalidateVisible() {
+    _cachedVisible = null;
+    _groupsSource = null;
+    _cachedGroups = null;
   }
 
   // Recarga dinámica: observación del disco + anti-solape de escaneos.
@@ -208,6 +718,7 @@ class FilesController extends ChangeNotifier {
     _cachedFavorites = null;
     _cachedVideos = null;
     _cachedRecentWeek = null;
+    _invalidateVisible();
   }
 
   /// Retorna los archivos marcadas como favoritas
@@ -241,8 +752,28 @@ class FilesController extends ChangeNotifier {
   /// Imágenes.
   List<FileModel> get imageFiles => filesOfKind(FileKind.image);
 
-  /// Documentos (PDF, ofimática, texto).
+  /// Documentos (PDF, Word, texto plano).
+  ///
+  /// Ya NO incluye hojas de cálculo ni presentaciones: tienen familia
+  /// propia ([spreadsheetFiles], [presentationFiles]) y categoría propia en
+  /// Explorar. Antes un `.xlsx` caía aquí y no se podía filtrar.
   List<FileModel> get documentFiles => filesOfKind(FileKind.document);
+
+  /// Hojas de cálculo: `.xlsx`, `.xls`, `.ods`.
+  List<FileModel> get spreadsheetFiles => filesOfKind(FileKind.spreadsheet);
+
+  /// Presentaciones: `.pptx`, `.ppt`, `.odp`.
+  List<FileModel> get presentationFiles => filesOfKind(FileKind.presentation);
+
+  /// Toda la ofimática junta: documento, hoja y presentación.
+  ///
+  /// Es lo que usan las búsquedas y el "abrir con", donde al usuario le
+  /// importa "documentos" y no si es un Excel o un PowerPoint. La
+  /// diferenciación fina es para las categorías, que sí las separa.
+  List<FileModel> get officeFiles => _files
+      .where((f) => kindForPath(f.path).isOffice)
+      .toList()
+    ..sort((a, b) => b.dateModified.compareTo(a.dateModified));
 
   /// Música.
   List<FileModel> get musicFiles => filesOfKind(FileKind.audio);
@@ -257,12 +788,18 @@ class FilesController extends ChangeNotifier {
   ///
   /// Es el cajón de sastre que cierra la pantalla de categorías: el
   /// usuario tiene que poder llegar a lo que no encaja en ningún grupo.
+  ///
+  /// Se mantiene `kindForPath` y no el `kind` del `FileEntry` a propósito:
+  /// el entry lo rellena el motor nativo cuando está disponible, y esta
+  /// lista es el respaldo que tiene que funcionar igual sin él.
   List<FileModel> get otherFiles => _files
       .where((f) => const {
         FileKind.other,
         FileKind.code,
         FileKind.archive,
         FileKind.apk,
+        FileKind.spreadsheet,
+        FileKind.presentation,
       }.contains(kindForPath(f.path)))
       .toList()
     ..sort((a, b) => b.dateModified.compareTo(a.dateModified));
@@ -305,6 +842,19 @@ class FilesController extends ChangeNotifier {
     'camara',
   };
 
+  /// Nombres de carpeta que resuelven "Instagram".
+  static const instagramFolderNames = {'instagram'};
+
+  /// Nombres de carpeta que resuelven "WhatsApp" (imágenes, vídeo,
+  /// audio y documentos de la app).
+  static const whatsappFolderNames = {
+    'whatsapp',
+    'whatsapp images',
+    'whatsapp video',
+    'whatsapp audio',
+    'whatsapp documents',
+  };
+
   /// Archivos de una carpeta concreta, resuelta por nombre.
   List<FileModel> filesInFolderNamed(Set<String> names) => _files.where((f) {
     return names.contains(f.folderName.toLowerCase());
@@ -321,12 +871,34 @@ class FilesController extends ChangeNotifier {
   /// Grabaciones de voz/vídeo.
   List<FileModel> get recorderFiles => filesInFolderNamed(recorderFolderNames);
 
+  /// Lo guardado por Instagram.
+  List<FileModel> get instagramFiles =>
+      filesInFolderNamed(instagramFolderNames);
+
+  /// Lo guardado por WhatsApp.
+  List<FileModel> get whatsappFiles =>
+      filesInFolderNamed(whatsappFolderNames);
+
   /// Volumen total en bytes de los archivos escaneados.
   int get totalBytes =>
       _files.fold(0, (sum, f) => sum + f.sizeInBytes);
 
   /// Volumen formateado ('1,4 GB') para la fila de espacio.
   String get totalFormattedSize => FileModel.formatBytes(totalBytes);
+
+  /// Recientes: [visibleFiles] recortados a los últimos 7 días.
+  ///
+  /// Lo que pinta `RecentsScreen`: si la modificación es anterior a la
+  /// ventana, el archivo se descarta aquí, antes de agrupar por día y de
+  /// pedir miniaturas. Hereda filtros (cámara, búsqueda) y orden
+  /// descendente de [visibleFiles]: los más recientes primero.
+  List<FileModel> get recentFiles {
+    final cutoff = DateTime.now().subtract(recentWindow);
+    return [
+      for (final f in visibleFiles)
+        if (!f.dateModified.isBefore(cutoff)) f,
+    ];
+  }
 
   static const recentWindow = Duration(days: 7);
 
@@ -448,9 +1020,22 @@ class FilesController extends ChangeNotifier {
   Set<String> _lastInsertedIds = {};
   Set<String> get lastInsertedIds => _lastInsertedIds;
 
+  /// Favoritos locales unidos con los de NPhotos (mejor esfuerzo).
+  ///
+  /// Guarda la unión en [_favoriteUnion] para que la UI la consulte sin
+  /// E/S. Nunca lanza: sin fuente externa, son los locales.
+  Future<Set<String>> _unionFavorites() async {
+    final union =
+        await _favorites.unionFavorites(_store?.favoriteIds() ?? const {});
+    _favoriteUnion = union;
+    return union;
+  }
+
   /// Hidrata la grilla desde el snapshot local para apertura en ~0ms.
   /// No toca el estado de carga: si hay caché, pasa directo a loaded.
   Future<void> hydrateFromCache() async {
+    // Vía rápida: índice nativo (<50ms, con tamaños y fechas reales).
+    if (await hydrateFromNativeIndex()) return;
     if (_files.isNotEmpty || _state == FilesState.loaded) return;
     try {
       _store ??= await LocalStore.load();
@@ -459,7 +1044,7 @@ class FilesController extends ChangeNotifier {
     }
     final snapshot = _store!.loadSnapshot();
     if (snapshot.isEmpty) return;
-    final favoriteIds = _store!.favoriteIds();
+    final favoriteIds = await _unionFavorites();
     final trashedAt = _store!.trashedAt();
     final cached = <FileModel>[];
     for (final row in snapshot) {
@@ -492,11 +1077,150 @@ class FilesController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Hidrata DIRECTAMENTE desde la BD local (redb en Rust, <50ms).
+  ///
+  /// Abre el `.redb`, hace `memcpy` de las filas y pinta sin tocar el disco.
+  /// Devuelve `true` si hidrató (aunque sea con 0 filas pero con índice
+  /// válido y estado `loaded`); `false` si no hay motor/BD y hay que caer
+  /// al snapshot de `SharedPreferences`.
+  Future<bool> hydrateFromNativeIndex() async {
+    if (_files.isNotEmpty || _state == FilesState.loaded) return true;
+    try {
+      final opened = await _nativeIndex.open();
+      // Espacio al instante, en paralelo a la hidratación (µs, sin escaneo).
+      loadStorage();
+      if (!opened) return false;
+      try {
+        _store ??= await LocalStore.load();
+      } catch (_) {
+        _store = null;
+      }
+      final favs = await _unionFavorites();
+      final trashedAt = _store?.trashedAt() ?? const {};
+      final hydrated = _nativeIndex.hydrate(favoriteIds: favs);
+      if (hydrated.isEmpty) return false;
+      final visible = [
+        for (final f in hydrated)
+          if (!trashedAt.containsKey(f.path)) f,
+      ];
+      if (visible.isEmpty) return false;
+      _files = visible;
+      _invalidateCaches();
+      _state = FilesState.loaded;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('hidratación nativa falló, cae a snapshot: $e');
+      return false;
+    }
+  }
+
+  /// Lee `statvfs` y lo publica para la hoja de Espacio (instantáneo).
+  ///
+  /// Con [silent], no notifica: quien llama entrega su propio bloque
+  /// después y un aviso intermedio sería un rebuild de más.
+  void loadStorage({bool silent = false}) {
+    try {
+      final info = StorageService.quick(StorageService.defaultMount());
+      if (info != null) {
+        _storage = info;
+        // No se notifica a propósito en caliente: la hoja lo lee al abrir.
+        // Si ya hay oyentes de espacio, este sí avisa.
+        if (!silent) notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('statvfs no disponible: $e');
+    }
+  }
+
+  /// Sincronización incremental en segundo plano (sin `loading`).
+  ///
+  /// Compara el `mtime` de cada raíz con lo persistido y re-escanea SOLO las
+  /// que cambiaron. Las intactas se saltan: sin volver a escanear todo el
+  /// disco desde cero. Pensado para correr tras `hydrateFromNativeIndex`
+  /// sin bloquear la UI (el llamante lo lanza sin `await` o en isolate).
+  ///
+  /// El re-escaneo hereda el modo del servicio principal: en producción va
+  /// en isolate y en tests corre en línea (bajo reloj falso `compute`
+  /// nunca completa).
+  Future<void> syncIncrementalBackground() async {
+    if (_fetching || _disposed) return;
+    // Sin índice no hay diff posible: escaneo completo como antes.
+    if (!_nativeIndex.isAvailable) {
+      await fetchFiles(silent: _files.isNotEmpty);
+      return;
+    }
+    try {
+      final existing = await _fileService.existingRoots();
+      if (existing.isEmpty || _disposed) return;
+      final changedPaths =
+          _nativeIndex.changedRoots(existing).toSet();
+      if (changedPaths.isEmpty) {
+        // Nada cambió en disco: solo refresca espacio y sale.
+        loadStorage();
+        return;
+      }
+      final changed =
+          existing.where((d) => changedPaths.contains(d.path)).toList();
+      final service = FileService(
+        roots: changed,
+        useIsolate: _fileService.useIsolate,
+        showHidden: _showHiddenFiles,
+      );
+      final fresh = await service.loadFiles();
+      if (_disposed) return;
+      if (fresh.isEmpty) {
+        _nativeIndex.persist(_files, existing);
+        return;
+      }
+      // Fusión: quita lo viejo de esas raíces y mete lo fresco.
+      final keep = _files
+          .where((f) => !changedPaths.contains(p.dirname(f.path)))
+          .toList();
+      // Respeta papelera/favoritos persistidos (unidos con NPhotos).
+      try {
+        _store ??= await LocalStore.load();
+      } catch (_) {}
+      final favs = await _unionFavorites();
+      final trashedAt = _store?.trashedAt() ?? {};
+      final next = <FileModel>[];
+      final nextTrash = List<TrashedFile>.of(_trash);
+      for (final f in [...keep, ...fresh]) {
+        final withFav =
+            favs.contains(f.id) ? f.copyWith(isFavorite: true) : f;
+        if (trashedAt.containsKey(withFav.id)) {
+          if (!nextTrash.any((t) => t.file.id == withFav.id)) {
+            nextTrash.add(
+              TrashedFile(file: withFav, trashedAt: trashedAt[withFav.id]!),
+            );
+          }
+        } else {
+          next.add(withFav);
+        }
+      }
+      next.sort((a, b) => b.dateModified.compareTo(a.dateModified));
+      _lastInsertedIds = _applyIncrementalUpdate(next, nextTrash);
+      await _saveSnapshot(next);
+      loadStorage(silent: true);
+      _state = FilesState.loaded;
+      notifyListeners();
+      // Índice nativo DESPUÉS de pintar, como en `fetchFiles`.
+      _nativeIndex.persist(next, existing);
+    } catch (e) {
+      debugPrint('sync incremental falló, cae a fetch: $e');
+      await fetchFiles(silent: _files.isNotEmpty);
+    }
+  }
+
   Future<void> fetchFiles({bool silent = false}) async {
     // Anti-solape: el watcher, el pull-to-refresh y el resume pueden
     // pedir recargas a la vez; solo un escaneo corre al mismo tiempo.
     if (_fetching) return;
     _fetching = true;
+    // Si ya se entregó el bloque de datos con su notificación, el `finally`
+    // no vuelve a notificar: un rebuild redundante con 30k filas es un
+    // tirón visible.
+    var delivered = false;
     // Carga silenciosa: si ya hay datos, no se emite loading para evitar
     // pantallas de carga repetitivas y parpadeos.
     final bool showLoading = !silent || _files.isEmpty;
@@ -526,8 +1250,11 @@ class FilesController extends ChangeNotifier {
         _store = null;
       }
 
-      final loaded = await _fileService.loadFiles();
-      final favoriteIds = _store?.favoriteIds() ?? {};
+      // El ajuste de ocultos vive en el ajuste, no en el servicio: se pide
+      // una copia con el valor vigente para que un cambio a mitad de sesión
+      // no espere al siguiente arranque.
+      final loaded = await _fileService.withHidden(_showHiddenFiles).loadFiles();
+      final favoriteIds = await _unionFavorites();
       final trashedAt = _store?.trashedAt() ?? {};
 
       final nextFiles = <FileModel>[];
@@ -546,7 +1273,7 @@ class FilesController extends ChangeNotifier {
 
       if (silent && _files.isNotEmpty) {
         // Actualización incremental: inserta lo nuevo al inicio sin
-        // recargar ni parpadear. Solo se notifica una vez.
+        // recargar ni parpadear. La fusión ya no notifica por su cuenta.
         _lastInsertedIds = _applyIncrementalUpdate(nextFiles, nextTrash);
       } else {
         _files = nextFiles;
@@ -561,13 +1288,34 @@ class FilesController extends ChangeNotifier {
       );
       await loadPrivate();
       await _saveSnapshot(nextFiles);
+      loadStorage(silent: true);
       _state = FilesState.loaded;
+      notifyListeners();
+      delivered = true;
+      // Persistencia pesada (N cruces FFI) DESPUÉS de pintar: la UI ya
+      // tiene su bloque y el frame sale sin esperar al índice nativo.
+      await _persistNativeIndex(nextFiles);
     } catch (e) {
       _errorMessage = 'Error al cargar los archivos: $e';
       _state = FilesState.error;
     } finally {
       _fetching = false;
-      notifyListeners();
+      if (!delivered) notifyListeners();
+    }
+  }
+
+  /// Persiste el árbol + mtimes para la próxima hidratación <50ms.
+  /// Best-effort y fuera del camino de pintado: si no hay motor, el
+  /// snapshot de arriba ya cubre.
+  Future<void> _persistNativeIndex(List<FileModel> files) async {
+    if (_disposed) return;
+    try {
+      await _nativeIndex.open();
+      final roots = await _fileService.existingRoots();
+      if (_disposed) return;
+      _nativeIndex.persist(files, roots);
+    } catch (e) {
+      debugPrint('no se pudo persistir el índice nativo: $e');
     }
   }
 
@@ -603,8 +1351,12 @@ class FilesController extends ChangeNotifier {
     this.privateDirOverride,
     ThumbsService? thumbs,
     MediaIndexService? media,
+    NativeFileIndex? nativeIndex,
+    FavoritesService? favorites,
   })  : thumbs = thumbs ?? ThumbsService(),
         media = media ?? MediaIndexService(),
+        _nativeIndex = nativeIndex ?? NativeFileIndex(),
+        _favorites = favorites ?? FavoritesService(),
         _fileService = fileService ?? FileService() {
     // El perfil por defecto (alto) se empuja ya: sin esto el motor arranca
     // con su propia idea de qué es "alta" y puede no coincidir con la del
@@ -644,6 +1396,11 @@ class FilesController extends ChangeNotifier {
   /// lista viene vacía y la UI cae a su propio placeholder: degradar es
   /// el estado normal, no un error.
   ///
+  /// Con el ajuste "solo con Wi-Fi" ([thumbnailsWifiOnly]) no genera
+  /// nada: devuelve únicamente lo que ya está en el mapa de la sesión, sin
+  /// tocar el motor. Es el punto donde se connecta una comprobación de red
+  /// cuando las miniaturas seResolution desde la nube.
+  ///
   /// Lotes acotados a [thumbBatch] porque cada tanda es un viaje al
   /// isolate y porque la memoria nativa del motor es proporcional al
   /// tamaño del lote.
@@ -679,6 +1436,88 @@ class FilesController extends ChangeNotifier {
     if (imagePaths.isEmpty) return const [];
     await media.readMetadata(imagePaths);
     return media.group(groupBy: GroupBy.day);
+  }
+
+  /// Miniaturas ya generadas, por ruta original. El valor es la ruta del
+  /// JPEG en la caché de Rust.
+  final Map<String, String> _thumbnails = {};
+
+  /// Miniaturas de las rutas dadas, usando la caché y generando lo que falte.
+  ///
+  /// Es idempotente: lo que ya está en [_thumbnails] no se vuelve a pedir, y
+  /// lo que el motor tiene en disco sale de ahí sin coste. Se llama ANTES de
+  /// pintar, nunca durante: generar un icono abre un isolate, y hacerlo en
+  /// un `build` sería a la vez inútil y congelante.
+  ///
+  /// Avisa a los oyentes cuando hay miniaturas nuevas, que es lo que hace que
+  /// las fichas aparezcan con su imagen sin que nadie tenga que forzar el
+  /// rebuild.
+  Future<Map<String, String>> ensureThumbnails(
+    Iterable<String> paths, {
+    int boxPx = ThumbBox.list,
+  }) async {
+    // "Solo con Wi-Fi" activo: no se genera nada. Se devuelve lo que ya
+    // hay en el mapa de la sesión, así que una miniatura de disco que ya
+    // se había resuelto sigue pintándose y no se tira trabajo ya hecho.
+    if (_thumbnailsWifiOnly) return Map.unmodifiable(_thumbnails);
+
+    final wanted = [for (final p in paths) if (!_thumbnails.containsKey(p)) p];
+    if (wanted.isEmpty) return Map.unmodifiable(_thumbnails);
+
+    final fresh = await thumbs.thumbnailsFor(wanted, boxPx: boxPx);
+    if (_disposed || fresh.isEmpty) return Map.unmodifiable(_thumbnails);
+    _thumbnails.addAll(fresh);
+    notifyListeners();
+    return Map.unmodifiable(_thumbnails);
+  }
+
+  /// Miniatura de una ruta, si ya se generó.
+  String? thumbnailFor(String path) => _thumbnails[path];
+
+  /// Genera la miniatura de UN archivo ahora, ignorando el ajuste de
+  /// red.
+  ///
+  /// Es el camino de la demanda explícita (abrir un archivo), que es
+  /// justo lo que "solo con Wi-Fi" no puede bloquear: el usuario pidió
+  /// esa imagen, no un prerrellenado de la pantalla.
+  Future<String?> generateThumbnail(
+    String path, {
+    int? boxPx,
+  }) async {
+    if (path.isEmpty) return null;
+    final ya = _thumbnails[path];
+    if (ya != null) return ya;
+    final ref = await thumbs.generateOne(path, boxPx: boxPx);
+    if (_disposed || ref == null || !ref.isUsable) return null;
+    _thumbnails[path] = ref.path;
+    notifyListeners();
+    return ref.path;
+  }
+
+  /// Olvida las rutas del mapa en memoria.
+  ///
+  /// NO borra la caché de disco: eso es [clearThumbnailCache], que es más
+  /// lento y de otra categoría. Esto solo hace que un cambio de tamaño de
+  /// ficha vuelva a mirar el motor, que es lo que se quiere al pasar de
+  /// mosaico a lista.
+  void forgetThumbnails() {
+    if (_thumbnails.isEmpty) return;
+    _thumbnails.clear();
+    notifyListeners();
+  }
+
+  /// Borra la caché de miniaturas en disco. Devuelve cuántos archivos.
+  ///
+  /// Nunca lanza: sin motor, o con un archivo en uso, responde 0 y la UI
+  /// lo dice. Un ajuste que puede reventar la pantalla es peor que uno que
+  /// no hace nada.
+  Future<int> clearThumbnailCache() async {
+    try {
+      return await thumbs.clearCache();
+    } catch (e) {
+      debugPrint('no se pudo limpiar la caché de miniaturas: $e');
+      return 0;
+    }
   }
 
   /// Tamaño de tanda para miniaturas.
@@ -741,6 +1580,9 @@ class FilesController extends ChangeNotifier {
 
   /// Diferencia [next] contra el estado actual y lo fusiona.
   /// Retorna los ids nuevos (para animar su inserción al inicio).
+  ///
+  /// No notifica: quien llama entrega el bloque fusionado con un solo
+  /// `notifyListeners`, para no pintar dos veces seguidas.
   Set<String> _applyIncrementalUpdate(
     List<FileModel> next,
     List<TrashedFile> nextTrash,
@@ -763,17 +1605,13 @@ class FilesController extends ChangeNotifier {
         }
       }
       _trash = nextTrash;
-      if (changed) {
-        _invalidateCaches();
-        notifyListeners();
-      }
+      if (changed) _invalidateCaches();
       return const {};
     }
 
     _files = next;
     _trash = nextTrash;
     _invalidateCaches();
-    notifyListeners();
     return inserted;
   }
 
@@ -977,8 +1815,38 @@ class FilesController extends ChangeNotifier {
   }
 
   Future<bool> _requestAndroidPermissions() async {
+    // Acceso total primero: con él sobra todo lo demás (documentos,
+    // descargas, Android/media). Es solo lectura de estado, no abre nada.
+    // En APIs <30 el plugin lo degrada y se sigue con el flujo clásico.
+    try {
+      if (await Permission.manageExternalStorage.isGranted) return true;
+    } catch (_) {
+      // Sin canal (tests) se cae al flujo clásico, que también falla
+      // cerrado y deja el estado en permissionDenied sin reventar.
+    }
     if (await Permission.photos.request().isGranted) return true;
     if (await Permission.storage.request().isGranted) return true;
     return false;
+  }
+
+  /// Resuelve el acceso al almacenamiento desde la pantalla de denegado.
+  ///
+  /// Reintenta medios y, si sigue denegado, abre los Ajustes del sistema
+  /// para conceder "Acceso a todos los archivos". Al volver, el resume de
+  /// la app dispara `refresh()` y la lista aparece sin más toques.
+  Future<void> resolveStorageAccess() async {
+    if (!Platform.isAndroid) {
+      await refresh();
+      return;
+    }
+    if (await _requestAndroidPermissions()) {
+      await refresh();
+      return;
+    }
+    try {
+      await openAppSettings();
+    } catch (_) {
+      // Sin canal no hay ajustes que abrir; el estado ya es denegado.
+    }
   }
 }
