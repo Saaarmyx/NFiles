@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:NexoraCore/NexoraCore.dart';
+import 'package:NexoraUi/NexoraUi.dart';
 import 'package:NFiles/app/nfiles_app.dart';
 import 'package:NFiles/controllers/files_controller.dart';
 import 'package:NFiles/models/explore_section.dart';
@@ -100,7 +101,8 @@ void main() {
     // sidebar de escritorio. Por eso se comprueban los iconos.
     expect(find.byIcon(Icons.history), findsOneWidget);
     expect(find.byIcon(Icons.explore_outlined), findsOneWidget);
-    expect(find.text('NFiles'), findsOneWidget);
+    // La topbar muestra el nombre del destino activo.
+    expect(find.text('Recientes'), findsOneWidget);
   });
 
   testWidgets('Recientes vacío declara el estado, no una pantalla rota', (
@@ -121,8 +123,7 @@ void main() {
     await tester.pumpWidget(buildApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Hoy'), findsOneWidget);
-    expect(find.text('| 1'), findsOneWidget);
+    expect(find.text('Hoy • 1 elemento'), findsOneWidget);
     expect(find.text('recien.jpg'), findsOneWidget);
   });
 
@@ -133,8 +134,8 @@ void main() {
     await tester.pumpWidget(buildApp());
     await tester.pumpAndSettle();
 
-    // "peso · carpeta" en la misma línea.
-    expect(find.textContaining('B · '), findsWidgets);
+    // "peso • carpeta" en la misma línea (formato de NRecentFileCard).
+    expect(find.textContaining('B • '), findsWidgets);
     expect(find.text('nota.pdf'), findsOneWidget);
   });
 
@@ -147,13 +148,13 @@ void main() {
 
     expect(find.text('a.jpg'), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_down_rounded));
     await tester.pumpAndSettle();
     expect(find.text('a.jpg'), findsNothing);
     // La cabecera sigue: solo se pliega el contenido.
-    expect(find.text('Hoy'), findsOneWidget);
+    expect(find.text('Hoy • 1 elemento'), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_down_rounded));
     await tester.pumpAndSettle();
     expect(find.text('a.jpg'), findsOneWidget);
   });
@@ -167,14 +168,18 @@ void main() {
     await tester.tap(find.byIcon(Icons.explore_outlined));
     await tester.pumpAndSettle();
 
-    expect(find.text('Ubicaciones'), findsOneWidget);
+    expect(find.text('Almacenamiento'), findsOneWidget);
     expect(find.text('NCloud'), findsOneWidget);
-    expect(find.text('Este dispositivo'), findsOneWidget);
+    expect(find.text('Mi Teléfono'), findsOneWidget);
   });
 
-  testWidgets('Explorar renderiza ubicaciones y las primeras categorías', (
+  testWidgets('Explorar renderiza almacenamiento y las primeras categorías', (
     tester,
   ) async {
+    // Con archivos: las categorías vacías no se pintan (ver "lo vacío se
+    // esconde"), así que para ver "Documentos" tiene que haber un pdf.
+    await put(tester, 'nota.pdf');
+    await put(tester, 'foto.jpg');
     phoneViewport(tester);
     await precargar(tester);
     await tester.pumpWidget(buildApp());
@@ -182,10 +187,10 @@ void main() {
     await tester.tap(find.byIcon(Icons.explore_outlined));
     await tester.pumpAndSettle();
 
-    // Lo que cabe en pantalla: cabecera de ubicaciones y el primer grupo.
-    expect(find.text('Ubicaciones'), findsOneWidget);
+    // Lo que cabe en pantalla: almacenamiento y el primer grupo.
+    expect(find.text('Almacenamiento'), findsOneWidget);
     expect(find.text('NCloud'), findsOneWidget);
-    expect(find.text('Este dispositivo'), findsOneWidget);
+    expect(find.text('Mi Teléfono'), findsOneWidget);
     expect(find.text('Documentos'), findsOneWidget);
     expect(find.text('Imágenes'), findsOneWidget);
   });
@@ -193,6 +198,11 @@ void main() {
   testWidgets('el scroll de Explorar alcanza las carpetas y recursos', (
     tester,
   ) async {
+    await put(tester, 'Downloads/descarga.pdf');
+    await put(tester, 'DCIM/foto.jpg');
+    await put(tester, 'Screenshots/captura.png');
+    await put(tester, 'Instagram/foto.jpg');
+    await put(tester, 'WhatsApp Images/img.jpg');
     phoneViewport(tester);
     await precargar(tester);
     await tester.pumpWidget(buildApp());
@@ -201,55 +211,65 @@ void main() {
     await tester.pumpAndSettle();
 
     // La lista es perezosa: para comprobar las filas de abajo hay que
-    // bajar de verdad, no solo buscarlas en el árbol.
-    for (var i = 0; i < 6 && find.text('Grabaciones').evaluate().isEmpty; i++) {
+    // bajar de verdad, no solo buscarlas en el árbol. Y lo de arriba se
+    // comprueba antes de bajar, porque el scroll lo saca del árbol.
+    expect(find.text('Acceso Rápido'), findsOneWidget);
+    expect(find.text('Descargas'), findsOneWidget);
+    expect(find.text('Categorías'), findsOneWidget);
+    for (var i = 0; i < 8 && find.text('WhatsApp').evaluate().isEmpty; i++) {
       await tester.drag(find.byType(ListView), const Offset(0, -220));
       await tester.pumpAndSettle();
     }
 
-    expect(find.text('Carpetas'), findsOneWidget);
-    expect(find.text('Descargas'), findsOneWidget);
-    expect(find.text('Favoritos'), findsOneWidget);
     expect(find.text('Recursos'), findsOneWidget);
     expect(find.text('Cámara'), findsOneWidget);
     expect(find.text('Capturas'), findsOneWidget);
-    expect(find.text('Grabaciones'), findsOneWidget);
+    expect(find.text('NRecorder'), findsOneWidget);
+    expect(find.text('Instagram'), findsOneWidget);
+    expect(find.text('WhatsApp'), findsOneWidget);
   });
 
   test('el orden de categorías es el pedido, en los datos', () {
-    // La lista es navegación, no una coincidencia. Se comprueba sobre
-    // `exploreGroups()` y no sobre el árbol de widgets: la `ListView` es
+    // La lista es navegación, no una coincidencia. Se comprueba sobre las
+    // listas de entradas y no sobre el árbol de widgets: la `ListView` es
     // perezosa y lo que no está en pantalla no existe como nodo.
-    final groups = exploreGroups();
-
-    expect(groups.map((g) => g.title).toList(), [
-      null,
-      'Carpetas',
-      'Recursos',
-    ]);
-    expect(groups[0].entries.map((e) => e.title).toList(), [
+    expect(
+      kQuickEntries().map((e) => e.title).toList(),
+      ['Descargas', 'Favoritos'],
+    );
+    // Hojas, presentaciones y comprimidos tienen entrada propia desde que
+    // el sniffer los distingue por contenido. El orden es navegación, no
+    // coincidencia: multimedia primero, luego documentos, y el cajón de
+    // "Archivos" cerrando la lista.
+    expect(kTypeEntries().map((e) => e.title).toList(), [
       'Documentos',
+      'Hojas de cálculo',
+      'Presentaciones',
+      'Comprimidos',
       'Imágenes',
       'Vídeos',
       'Música',
       'Archivos',
       'APKs',
     ]);
-    expect(groups[1].entries.map((e) => e.title).toList(), [
-      'Descargas',
-      'Favoritos',
-    ]);
-    expect(groups[2].entries.map((e) => e.title).toList(), [
+    // NRecorder es un marcador deshabilitado, no una carpeta.
+    expect(kResourceEntries().map((e) => e.title).toList(), [
       'Cámara',
       'Capturas',
-      'Grabaciones',
+      'NRecorder',
+      'Instagram',
+      'WhatsApp',
     ]);
+    expect(
+      kResourceEntries().firstWhere((e) => e.id == 'nrecorder').enabled,
+      isFalse,
+    );
   });
 
   test('las ubicaciones van antes que las categorías y marcan el remoto', () {
     expect(kStorageLocations.map((l) => l.title).toList(), [
       'NCloud',
-      'Este dispositivo',
+      'Mi Teléfono',
     ]);
     // NCloud es la única remota: sin backend aún, y se declara.
     expect(kStorageLocations.first.isRemote, isTrue);
@@ -262,14 +282,39 @@ void main() {
       fileService: FileService(roots: const [], useIsolate: false),
     );
     addTearDown(controller.dispose);
-    for (final group in exploreGroups()) {
-      for (final entry in group.entries) {
-        expect(entry.files(controller), isEmpty, reason: entry.title);
-      }
+    for (final entry in [
+      ...kQuickEntries(),
+      ...kTypeEntries(),
+      ...kResourceEntries(),
+    ]) {
+      expect(entry.files(controller), isEmpty, reason: entry.title);
     }
   });
 
-  testWidgets('las categorías vacías lo declaran en el subtítulo', (
+  testWidgets('las categorías vacías no se pintan', (tester) async {
+    // Solo hay un pdf suelto: media docena de categorías se queda vacía y
+    // sus filas desaparecen en vez de llevar a "Nada por aquí".
+    await put(tester, 'nota.pdf');
+    phoneViewport(tester);
+    await precargar(tester);
+    await tester.pumpWidget(buildApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.explore_outlined));
+    await tester.pumpAndSettle();
+
+    // La que tiene contenido sí sale, con su conteo y sin "Vacía".
+    expect(find.text('Documentos'), findsOneWidget);
+    expect(find.text('1 elemento'), findsOneWidget);
+    // Las que no, no: ni fila ni subtítulo de vacío.
+    expect(find.text('Imágenes'), findsNothing);
+    expect(find.text('Música'), findsNothing);
+    expect(find.text('APKs'), findsNothing);
+    expect(find.text('Vacía'), findsNothing);
+    // Y un grupo sin filas no deja el título colgando.
+    expect(find.text('Acceso Rápido'), findsNothing);
+  });
+
+  testWidgets('sin nada que enseñar se dice, no se deja en blanco', (
     tester,
   ) async {
     phoneViewport(tester);
@@ -279,10 +324,18 @@ void main() {
     await tester.tap(find.byIcon(Icons.explore_outlined));
     await tester.pumpAndSettle();
 
-    expect(find.text('Vacía'), findsWidgets);
+    // El almacenamiento siempre está (hay algo que medir); el resto no.
+    expect(find.text('Mi Teléfono'), findsOneWidget);
+    expect(find.text('No hay archivos en el almacenamiento'), findsOneWidget);
+    expect(find.text('Categorías'), findsNothing);
+    // "Recursos" sí sigue, pero solo con el marcador de NRecorder: un
+    // marcador deshabilitado no es una categoría vacía.
+    expect(find.text('Recursos'), findsOneWidget);
+    expect(find.text('Cámara'), findsNothing);
+    expect(find.text('Instagram'), findsNothing);
   });
 
-  testWidgets('"Este dispositivo" resume lo escaneado y las categorías lo suyo', (
+  testWidgets('"Mi Teléfono" mide el almacenamiento y las categorías lo suyo', (
     tester,
   ) async {
     await put(tester, 'a.jpg');
@@ -294,7 +347,9 @@ void main() {
     await tester.tap(find.byIcon(Icons.explore_outlined));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('64 B en 2 archivos'), findsOneWidget);
+    // El bloque de almacenamiento mide con medidor por fila.
+    expect(find.byType(NStorageSpecTile), findsNWidgets(2));
+    expect(find.text('Mi Teléfono'), findsOneWidget);
     // Imágenes y Documentos tienen 1 cada una.
     expect(find.text('1 elemento'), findsNWidgets(2));
   });

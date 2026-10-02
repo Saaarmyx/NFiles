@@ -112,6 +112,39 @@ void main() {
     });
   });
 
+  group('matriz de Explorar (acceso total)', () {
+    // Lo que "Acceso a todos los archivos" debe clasificar: si una de
+    // estas extensiones cae en otra familia, su categoría de Explorar
+    // sale vacía aunque el disco esté lleno de esos archivos.
+    test('documentos: pdf, txt, docx, xlsx, pptx', () {
+      expect(kindForPath('a/informe.pdf'), FileKind.document);
+      expect(kindForPath('a/notas.txt'), FileKind.document);
+      expect(kindForPath('a/carta.docx'), FileKind.document);
+      expect(kindForPath('a/cuentas.xlsx'), FileKind.spreadsheet);
+      expect(kindForPath('a/charla.pptx'), FileKind.presentation);
+    });
+
+    test('comprimidos: zip, rar, tar, gz, 7z', () {
+      for (final ext in ['zip', 'rar', 'tar', 'gz', '7z']) {
+        expect(kindForPath('a/datos.$ext'), FileKind.archive, reason: ext);
+      }
+    });
+
+    test('apks: apk y xapk', () {
+      expect(kindForPath('a/app.apk'), FileKind.apk);
+      expect(kindForPath('a/app.xapk'), FileKind.apk);
+    });
+
+    test('audio y vídeo: mp3, wav, flac, mp4, mkv, avi', () {
+      for (final ext in ['mp3', 'wav', 'flac']) {
+        expect(kindForPath('a/sonido.$ext'), FileKind.audio, reason: ext);
+      }
+      for (final ext in ['mp4', 'mkv', 'avi']) {
+        expect(kindForPath('a/clip.$ext'), FileKind.video, reason: ext);
+      }
+    });
+  });
+
   group('iconos', () {
     test('cada familia tiene icono', () {
       // Los iconos viven en la mitad con UI de NexoraCore: el dominio puro

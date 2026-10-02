@@ -204,32 +204,127 @@ void main() {
     });
   });
 
-  group('orden de categoría', () {
-    test('applyCategorySort A→Z y Z→A', () async {
+  group('orden del listado', () {
+    test('nombre A→Z y Z→A sin distinguir mayúsculas', () async {
       final c = empty();
       addTearDown(c.dispose);
-      final files = [file('/x/c.txt'), file('/x/a.txt'), file('/x/b.txt')];
+      final files = [file('/x/c.txt'), file('/x/A.txt'), file('/x/b.txt')];
 
-      c.setCategorySort(CategorySort.az);
+      c.setListingField(ListingSortField.name);
+      c.setListingDirection(SortDirection.asc);
       expect(
-        c.applyCategorySort(files).map((f) => f.title),
-        ['a.txt', 'b.txt', 'c.txt'],
+        c.sortListing(files).map((f) => f.title),
+        ['A.txt', 'b.txt', 'c.txt'],
       );
 
-      c.setCategorySort(CategorySort.za);
+      c.setListingDirection(SortDirection.desc);
       expect(
-        c.applyCategorySort(files).map((f) => f.title),
-        ['c.txt', 'b.txt', 'a.txt'],
+        c.sortListing(files).map((f) => f.title),
+        ['c.txt', 'b.txt', 'A.txt'],
       );
     });
 
-    test('applyCategorySort no muta la lista original', () async {
+    test('tamaño ordena por bytes', () async {
+      final c = empty();
+      addTearDown(c.dispose);
+      final files = [
+        file('/x/grande.bin', size: 300),
+        file('/x/peque.bin', size: 10),
+        file('/x/medio.bin', size: 100),
+      ];
+
+      c.setListingField(ListingSortField.size);
+      c.setListingDirection(SortDirection.asc);
+      expect(
+        c.sortListing(files).map((f) => f.title),
+        ['peque.bin', 'medio.bin', 'grande.bin'],
+      );
+
+      c.setListingDirection(SortDirection.desc);
+      expect(
+        c.sortListing(files).map((f) => f.title),
+        ['grande.bin', 'medio.bin', 'peque.bin'],
+      );
+    });
+
+    test('fecha ordena por modificación', () async {
+      final c = empty();
+      addTearDown(c.dispose);
+      final files = [
+        file('/x/viejo.txt', modified: DateTime(2026, 1, 1)),
+        file('/x/nuevo.txt', modified: DateTime(2026, 6, 1)),
+      ];
+
+      c.setListingField(ListingSortField.modified);
+      c.setListingDirection(SortDirection.desc);
+      expect(
+        c.sortListing(files).map((f) => f.title),
+        ['nuevo.txt', 'viejo.txt'],
+      );
+    });
+
+    test('tipo agrupa por familia y desempata por nombre', () async {
+      final c = empty();
+      addTearDown(c.dispose);
+      final files = [file('/x/b.pdf'), file('/x/a.jpg'), file('/x/c.pdf')];
+
+      c.setListingField(ListingSortField.kind);
+      c.setListingDirection(SortDirection.asc);
+      final titles = c.sortListing(files).map((f) => f.title).toList();
+      // La imagen (familia anterior) va primero; los dos PDF empatan y
+      // los ordena el nombre.
+      expect(titles, ['a.jpg', 'b.pdf', 'c.pdf']);
+    });
+
+    test('no muta la lista original', () async {
       final c = empty();
       addTearDown(c.dispose);
       final files = [file('/x/c.txt'), file('/x/a.txt')];
-      c.setCategorySort(CategorySort.az);
-      c.applyCategorySort(files);
+      c.setListingField(ListingSortField.name);
+      c.setListingDirection(SortDirection.asc);
+      c.sortListing(files);
       expect(files.first.title, 'c.txt');
+    });
+  });
+
+  group('estado de vista del listado', () {
+    test('los defaults son nombre ascendente', () {
+      const state = FilesViewState.fresh();
+
+      expect(state.listingField, ListingSortField.name);
+      expect(state.listingDirection, SortDirection.asc);
+    });
+
+    test('of() refleja campo y dirección vigentes', () {
+      final c = empty();
+      addTearDown(c.dispose);
+
+      c.setListingField(ListingSortField.size);
+      c.setListingDirection(SortDirection.desc);
+
+      final state = FilesViewState.of(c);
+      expect(state.listingField, ListingSortField.size);
+      expect(state.listingDirection, SortDirection.desc);
+      // Las claves son las de la pantalla de Ajustes (`default_*`), no
+      // nombres propios del popup: `FilesViewPrefs` lee y escribe con
+      // estas y un nombre distinto se pierde en silencio.
+      expect(state.toMap()['default_sort_field'], ListingSortField.size);
+      expect(state.toMap()['sort_direction'], SortDirection.desc);
+    });
+
+    test('los setters notifican para repintar', () {
+      final c = empty();
+      addTearDown(c.dispose);
+
+      var avisos = 0;
+      c.addListener(() => avisos++);
+      c.setListingField(ListingSortField.modified);
+      c.setListingDirection(SortDirection.desc);
+      // Repetir el mismo valor no notifica.
+      c.setListingField(ListingSortField.modified);
+      c.setListingDirection(SortDirection.desc);
+
+      expect(avisos, 2);
     });
   });
 
