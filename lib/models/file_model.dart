@@ -67,6 +67,19 @@ class FileModel {
   /// `'imagen.png'`: nombre con extensión, como lo ve el usuario.
   String get displayName => title;
 
+  /// Nombre para pintar, con o sin extensión según el ajuste
+  /// "Extensiones" (`show_file_extensions`).
+  ///
+  /// Sin extensión se quita desde el último punto; si no quedaría nada
+  /// (`.gitignore`) se devuelve el título intacto: una fila vacía es peor
+  /// que una extensión visible.
+  String displayNameFor(bool showExtension) {
+    if (showExtension) return title;
+    final dot = title.lastIndexOf('.');
+    if (dot <= 0) return title;
+    return title.substring(0, dot);
+  }
+
   /// Extensión en minúsculas con punto, o cadena vacía si no tiene.
   String get extension => p.extension(path).toLowerCase();
 

@@ -15,7 +15,10 @@ class ExploreEntry {
   final String id;
   final String title;
   final IconData icon;
-  final Color tint;
+
+  /// `false` = marcador deshabilitado (p. ej. NRecorder): se pinta sin
+  /// navegación, con su subtítulo de estado. Nunca finge llevar a algo.
+  final bool enabled;
 
   /// Subtítulo: si es `null`, se calcula como "N elementos" o "Vacía".
   final String? Function(FilesController controller)? subtitle;
@@ -27,9 +30,9 @@ class ExploreEntry {
     required this.id,
     required this.title,
     required this.icon,
-    required this.tint,
     required this.files,
     this.subtitle,
+    this.enabled = true,
   });
 }
 
@@ -39,7 +42,6 @@ class StorageLocation {
   final String title;
   final String subtitle;
   final IconData icon;
-  final Color tint;
 
   /// `false` mientras no haya backend: la fila se muestra pero avisa en vez
   /// de fingir que se puede abrir.
@@ -50,7 +52,6 @@ class StorageLocation {
     required this.title,
     required this.subtitle,
     required this.icon,
-    required this.tint,
     this.isRemote = false,
   });
 }
@@ -62,15 +63,13 @@ const List<StorageLocation> kStorageLocations = [
     title: 'NCloud',
     subtitle: 'Sin conexión. Requiere iniciar sesión.',
     icon: Icons.cloud_outlined,
-    tint: Color(0xFF14B8A6),
     isRemote: true,
   ),
   StorageLocation(
     id: 'device',
-    title: 'Este dispositivo',
+    title: 'Mi Teléfono',
     subtitle: 'Almacenamiento interno',
     icon: Icons.smartphone_outlined,
-    tint: Color(0xFF15803D),
   ),
 ];
 
@@ -81,100 +80,115 @@ List<ExploreEntry> kTypeEntries() => [
     id: 'documents',
     title: 'Documentos',
     icon: Icons.description_outlined,
-    tint: const Color(0xFF0EA5E9),
     files: (c) => c.documentFiles,
+  ),
+  // Hojas y presentaciones tienen categoría propia desde que el sniffer
+  // las distingue por el contenido del ZIP y no por la extensión. Antes
+  // estaban dentro de "Documentos" y no había forma de llegar a un Excel
+  // sin recorrerlos todos.
+  ExploreEntry(
+    id: 'spreadsheets',
+    title: 'Hojas de cálculo',
+    icon: Icons.table_chart_outlined,
+    files: (c) => c.spreadsheetFiles,
+  ),
+  ExploreEntry(
+    id: 'presentations',
+    title: 'Presentaciones',
+    icon: Icons.slideshow_outlined,
+    files: (c) => c.presentationFiles,
+  ),
+  ExploreEntry(
+    id: 'archives',
+    title: 'Comprimidos',
+    icon: Icons.folder_zip_outlined,
+    files: (c) => c.archiveFiles,
   ),
   ExploreEntry(
     id: 'images',
     title: 'Imágenes',
     icon: Icons.image_outlined,
-    tint: const Color(0xFFEC4899),
     files: (c) => c.imageFiles,
   ),
   ExploreEntry(
     id: 'videos',
     title: 'Vídeos',
     icon: Icons.videocam_outlined,
-    tint: const Color(0xFFEF4444),
     files: (c) => c.videos,
   ),
   ExploreEntry(
     id: 'music',
     title: 'Música',
     icon: Icons.music_note_outlined,
-    tint: Color(0xFFF97316),
     files: (c) => c.musicFiles,
   ),
   ExploreEntry(
     id: 'files',
     title: 'Archivos',
     icon: Icons.insert_drive_file_outlined,
-    tint: const Color(0xFF64748B),
     files: (c) => c.otherFiles,
   ),
   ExploreEntry(
     id: 'apks',
     title: 'APKs',
     icon: Icons.android,
-    tint: Color(0xFF84CC16),
     files: (c) => c.apkFiles,
   ),
 ];
 
-/// Carpetas del usuario.
-List<ExploreEntry> kFolderEntries() => [
+/// Acceso rápido: descargas siempre, favoritos solo si hay.
+/// La condición la pone la pantalla (`favoriteFiles.isNotEmpty`).
+List<ExploreEntry> kQuickEntries() => [
   ExploreEntry(
     id: 'downloads',
     title: 'Descargas',
     icon: Icons.download_outlined,
-    tint: const Color(0xFF3B82F6),
     files: (c) => c.downloadFiles,
   ),
   ExploreEntry(
     id: 'favorites',
     title: 'Favoritos',
     icon: Icons.favorite_border,
-    tint: Colors.pink,
     files: (c) => c.favoriteFiles,
   ),
 ];
 
 /// Recursos del dispositivo por origen.
+///
+/// NRecorder va deshabilitado a propósito: es un marcador de la función
+/// que viene, no una carpeta. Sin `enabled: false` llevaría a una
+/// categoría vacía que promete algo que no existe.
 List<ExploreEntry> kResourceEntries() => [
   ExploreEntry(
     id: 'camera',
     title: 'Cámara',
     icon: Icons.photo_camera_outlined,
-    tint: Colors.blue,
     files: (c) => c.cameraFiles,
   ),
   ExploreEntry(
     id: 'screenshots',
     title: 'Capturas',
     icon: Icons.screenshot_monitor_outlined,
-    tint: Colors.purple,
     files: (c) => c.screenshotFiles,
   ),
   ExploreEntry(
-    id: 'recorder',
-    title: 'Grabaciones',
+    id: 'nrecorder',
+    title: 'NRecorder',
     icon: Icons.mic_none_outlined,
-    tint: const Color(0xFF22C55E),
-    files: (c) => c.recorderFiles,
+    files: (_) => const [],
+    subtitle: (_) => 'Próximamente',
+    enabled: false,
   ),
-];
-
-/// Un grupo con título dentro de Explorar.
-class ExploreGroup {
-  final String? title;
-  final List<ExploreEntry> entries;
-
-  const ExploreGroup({required this.title, required this.entries});
-}
-
-/// Los tres grupos, en el orden pedido.
-List<ExploreGroup> exploreGroups() => [
-  ExploreGroup(title: null, entries: kTypeEntries()),
-  ExploreGroup(title: 'Carpetas', entries: kFolderEntries()),
-  ExploreGroup(title: 'Recursos', entries: kResourceEntries()),
+  ExploreEntry(
+    id: 'instagram',
+    title: 'Instagram',
+    icon: Icons.photo_library_outlined,
+    files: (c) => c.instagramFiles,
+  ),
+  ExploreEntry(
+    id: 'whatsapp',
+    title: 'WhatsApp',
+    icon: Icons.chat_outlined,
+    files: (c) => c.whatsappFiles,
+  ),
 ];
