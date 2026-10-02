@@ -1,8 +1,10 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
 import 'package:NexoraUi/NexoraUi.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../controllers/files_controller.dart';
+import 'view_prefs.dart';
 
 /// Persistencia local de NFiles (favoritos y papelera).
 ///
@@ -17,16 +19,19 @@ class LocalStore {
   static const _privateOriginsKey = 'nfiles_private_origins_v1';
   static const _albumsKey = 'nfiles_albums_v1';
   static const _onboardingDoneKey = 'nfiles_onboarding_done_v1';
-  static const _usernameKey = 'nfiles_username_v1';
-  static const _avatarKey = 'nfiles_avatar_v1';
-  static const _accentKey = 'nfiles_accent_v1';
-  static const _themeModeKey = 'nfiles_theme_mode_v1';
-  static const _barStyleKey = 'nfiles_bar_style_v1';
-  static const _performanceKey = 'nfiles_performance_v1';
 
   final SharedPreferences _prefs;
 
   LocalStore(this._prefs);
+
+  /// El `SharedPreferences` subyacente.
+  ///
+  /// Lo necesitan las piezas del kit que hablan [NKeyValueStore]
+  /// (preferencias de vista, apariencia): constructores distintos con la
+  /// misma clave de escritura sobre el mismo almacén. Antes [viewPrefs]
+  /// era la única puerta y quien quisiera una segunda instancia tenía que
+  /// reconstruirla aquí.
+  SharedPreferences get prefs => _prefs;
 
   static Future<LocalStore> load() async =>
       LocalStore(await SharedPreferences.getInstance());
@@ -156,51 +161,82 @@ class LocalStore {
   /// Si ya se completó la bienvenida inicial.
   bool onboardingDone() => _prefs.getBool(_onboardingDoneKey) ?? false;
 
-  /// Persiste la bienvenida: estado actual de [AppAppearance] + fin.
+  /// Preferencias del popup de la topbar (orden, vista, filtro, y las
+  /// de Explorar y Categorías). Mismo almacén, otro prefijo.
+  late final FilesViewPrefs viewPrefs =
+      FilesViewPrefs(PrefsKeyValueStore(_prefs));
+
+  /// Aplica lo guardado al controller y se queda escuchando.
+  void applyViewPreferences(FilesController controller) {
+    viewPrefs.applyTo(controller, viewPrefs.load());
+    viewPrefs.attach(controller);
+  }
+
+  /// Persistencia de la apariencia, delegada en el kit.
+  ///
+  /// La lista de ajustes (acento, tema, estilo, intensidad, modo, usuario
+  /// y foto) la define [NAppearanceStore] para que las dos apps no puedan
+  /// desincronizarse. Aqui solo se le da nombre y prefijo.
+  late final NAppearanceStore appearance =
+      NAppearanceStore(PrefsKeyValueStore(_prefs), prefix: 'nfiles_appearance_');
+
+  /// Persiste la bienvenida y marca el fin.
   Future<void> saveOnboarding() async {
-    await _prefs.setString(_usernameKey, AppAppearance.userName.value);
-    final avatar = AppAppearance.avatarPath.value;
-    if (avatar != null) {
-      await _prefs.setString(_avatarKey, avatar);
-    } else {
-      await _prefs.remove(_avatarKey);
-    }
-    await _prefs.setInt(
-        _accentKey, AppAppearance.accentColor.value.toARGB32());
-    await _prefs.setString(
-        _themeModeKey, AppAppearance.themeMode.value.name);
-    await _prefs.setString(
-        _barStyleKey, AppAppearance.barStyle.value.name);
-    await _prefs.setString(
-        _performanceKey, AppAppearance.performanceMode.value.name);
+    await appearance.save();
     await _prefs.setBool(_onboardingDoneKey, true);
   }
 
-  /// Aplica la apariencia guardada (o el rosado por defecto).
+  /// Aplica la apariencia guardada y se queda escuchando para que
+  /// cualquier cambio posterior se guarde solo.
+  ///
+  /// Antes solo se guardaba al terminar la bienvenida, asi que cambiar el
+  /// acento o el estilo despues se perdia al reiniciar.
   void applyAppearance() {
-    if (!onboardingDone()) {
-      // Acento de NFiles (verde profundo), el token que le toca a este
-      // producto en la paleta de NexoraUi.
-      AppAppearance.setAccentColor(NAccentColors.files);
-      return;
-    }
-    AppAppearance.setUserName(_prefs.getString(_usernameKey) ?? '');
-    AppAppearance.setAvatarPath(_prefs.getString(_avatarKey));
-    final accent = _prefs.getInt(_accentKey);
-    if (accent != null) AppAppearance.setAccentColor(Color(accent));
-    AppAppearance.setThemeMode(ThemeMode.values.firstWhere(
-      (m) => m.name == _prefs.getString(_themeModeKey),
-      orElse: () => ThemeMode.system,
-    ));
-    AppAppearance.setBarStyle(NBarStyle.values.firstWhere(
-      (s) => s.name == _prefs.getString(_barStyleKey),
-      orElse: () => NBarStyle.solid,
-    ));
-    AppAppearance.setPerformanceMode(NPerformanceMode.values.firstWhere(
-      (m) => m.name == _prefs.getString(_performanceKey),
-      orElse: () => NPerformanceMode.high,
-    ));
+    appearance.load(defaultAccent: NAccentColors.files);
+    appearance.attach();
   }
+}
+
+/// Adaptador de [NKeyValueStore] sobre `SharedPreferences`.
+///
+/// El kit define la persistencia de la apariencia pero no depende de
+/// `shared_preferences`, para no arrastrar el plugin a quien solo quiera
+/// un componente. Esta clase es todo el pegamento que hace falta.
+class PrefsKeyValueStore implements NKeyValueStore {
+  final SharedPreferences prefs;
+
+  const PrefsKeyValueStore(this.prefs);
+
+  @override
+  String? getString(String key) => prefs.getString(key);
+
+  @override
+  double? getDouble(String key) => prefs.getDouble(key);
+
+  @override
+  int? getInt(String key) => prefs.getInt(key);
+
+  @override
+  bool? getBool(String key) => prefs.getBool(key);
+
+  @override
+  Future<void> setString(String key, String? value) async {
+    if (value == null) {
+      await prefs.remove(key);
+    } else {
+      await prefs.setString(key, value);
+    }
+  }
+
+  @override
+  Future<void> setDouble(String key, double value) =>
+      prefs.setDouble(key, value);
+
+  @override
+  Future<void> setInt(String key, int value) => prefs.setInt(key, value);
+
+  @override
+  Future<void> setBool(String key, bool value) => prefs.setBool(key, value);
 }
 
 /// Previsualización de un álbum: nombre, carátula y visibilidad.

@@ -5,10 +5,9 @@ import 'package:path/path.dart' as p;
 
 import 'package:NexoraCore/NexoraCore.dart';
 import '../models/file_model.dart';
-import 'media_probe.dart';
 
 class FileService {
-  /// Imágenes: única familia con metadatos EXIF/dimensiones (media_probe).
+  /// Imágenes: única familia con metadatos EXIF/dimensiones (sonda de NexoraCore).
   static const Set<String> imageExtensions = {
     '.jpg',
     '.jpeg',
@@ -58,7 +57,28 @@ class FileService {
   /// son pocas y pequeñas, porque el salto de isolate se paga entero.
   final bool useIsolate;
 
-  FileService({this.roots, this.useIsolate = true});
+  /// Si el barrido incluye los archivos ocultos (los que empiezan por `.`)
+  /// y los que viven dentro de carpetas ocultas (`.thumbnails`, `.trash`).
+  ///
+  /// Por defecto `false`, que es lo que espera un gestor: `.thumbnails`
+  /// puede tener una copia de cada imagen del móvil y, al incluirlo, el
+  /// conteo de cada categoría se duplica. El ajuste "Archivos ocultos" de
+  /// Ajustes conmuta esto y dispara un reescaneo.
+  final bool showHidden;
+
+  FileService({this.roots, this.useIsolate = true, this.showHidden = false});
+
+  /// Copia con [showHidden] distinto, conservando raíces y modo de barrido.
+  ///
+  /// El servicio es inmutable y vive en el controlador, pero el ajuste de
+  /// ocultos cambia durante la sesión: en vez de mutarlo (y que el
+  /// reescaneo concurrente vea un estado a medias) cada barrido pide una
+  /// copia con el valor vigente.
+  FileService withHidden(bool value) => FileService(
+        roots: roots,
+        useIsolate: useIsolate,
+        showHidden: value,
+      );
 
   Future<List<FileModel>> loadFiles() async {
     if (roots != null) {
@@ -150,9 +170,14 @@ class FileService {
 
     List<Map<String, Object>> rows;
     try {
+      // `compute` toma UN argumento, así que el flag viaja en un registro
+      // (`(List<String>, bool)`) y no en un Map: los registros son
+      // transferibles entre isolates y no hay claves que puedan quedar sin
+      // leer por un lado.
+      final request = (existing, showHidden);
       rows = useIsolate
-          ? await compute(_scanPaths, existing)
-          : await _scanPaths(existing);
+          ? await compute(_scan, request)
+          : await _scan(request);
     } catch (e) {
       debugPrint('Error escaneando directorios $label: $e');
       return [];
@@ -163,7 +188,10 @@ class FileService {
           (row) => FileModel(
             id: row['path'] as String,
             path: row['path'] as String,
-            title: p.basename(row['path'] as String),
+            // Todo lo derivable del nombre ya viene resuelto del isolate:
+            // recalcularlo aquí por fila es lo que atascaba el hilo UI con
+            // decenas de miles de archivos.
+            title: row['title'] as String,
             dateCreated: DateTime.fromMillisecondsSinceEpoch(
               row['created'] as int,
             ),
@@ -176,18 +204,16 @@ class FileService {
             height: row['height'] as int?,
             latitude: (row['lat'] as num?)?.toDouble(),
             longitude: (row['lng'] as num?)?.toDouble(),
-            locationLabel: _locationLabel(
-              (row['lat'] as num?)?.toDouble(),
-              (row['lng'] as num?)?.toDouble(),
-            ),
-            isMotionPhoto: _isMotionPhoto(row['path'] as String),
-            isSelfie: _isSelfie(row['path'] as String),
+            locationLabel: row['loc'] as String?,
+            isMotionPhoto: (row['motion'] as bool?) ?? false,
+            isSelfie: (row['selfie'] as bool?) ?? false,
             // duration se resuelve bajo demanda en el visor (media_kit).
           ),
         )
         .toList();
 
-    files.sort((a, b) => b.dateModified.compareTo(a.dateModified));
+    // Ya vienen ordenadas del isolate (ver `_scanPaths`): ordenar aquí de
+    // nuevo sería pagar el O(N log N) en el hilo de UI.
     return files;
   }
 
@@ -221,17 +247,31 @@ class FileService {
   /// Dos fases: (1) caminata síncrona rápida con `stat` y (2) sonda de
   /// cabecera (dimensiones + GPS EXIF) en lotes concurrentes. Un fallo
   /// por archivo nunca rompe el barrido: esa archivo queda sin metadatos.
+  /// Al salir, las filas van ordenadas por modificación descendente y con
+  /// lo derivable del nombre ya calculado, para que el hilo de UI solo
+  /// materialice modelos en una pasada.
+  static Future<List<Map<String, Object>>> _scan(
+    (List<String>, bool) request,
+  ) =>
+      _scanPaths(request.$1, showHidden: request.$2);
+
   static Future<List<Map<String, Object>>> _scanPaths(
-    List<String> dirPaths,
-  ) async {
+    List<String> dirPaths, {
+    bool showHidden = false,
+  }) async {
     final found = <_FoundFile>[];
+    // Las raíces se solapan a propósito (la base cubre a las subcarpetas,
+    // que se listan para cuando la base no es legible): sin este visto, un
+    // archivo saldría una vez por cada raíz que lo contenga e inflaría
+    // conteos y categorías.
+    final seen = <String>{};
     for (final dirPath in dirPaths) {
       try {
         final entities = Directory(
           dirPath,
         ).listSync(recursive: true, followLinks: false);
         for (final entity in entities) {
-          if (!_isValidMediaFile(entity)) continue;
+          if (!_isValidMediaFile(entity, showHidden: showHidden)) continue;
           final file = entity as File;
 
           FileStat stat;
@@ -242,6 +282,8 @@ class FileService {
           }
           // Ignorar archivos vacíos / corruptos de 0 bytes
           if (stat.size == 0) continue;
+          // Ya visto por otra raíz solapada: fuera duplicados.
+          if (!seen.add(file.path)) continue;
 
           found.add(
             _FoundFile(
@@ -270,17 +312,30 @@ class FileService {
       final probed = await Future.wait(batch.map(_probeFound));
       rows.addAll(probed);
     }
+    // El orden descendente se fija AQUÍ, dentro del isolate: ordenar los
+    // mapas por un entero es barato, y evita el O(N log N) con objetos
+    // DateTime en el hilo de UI al materializar.
+    rows.sort(
+      (a, b) => (b['modified'] as int).compareTo(a['modified'] as int),
+    );
     return rows;
   }
 
   /// Materializa la fila de un archivo + su sonda (si es imagen).
+  ///
+  /// También precalcula lo derivable del nombre (título, heurísticas) y la
+  /// etiqueta de ubicación: hacerlo aquí, dentro del isolate, evita
+  /// repetirlo por fila en el hilo de UI al materializar los modelos.
   static Future<Map<String, Object>> _probeFound(_FoundFile file) async {
     final row = <String, Object>{
       'path': file.path,
+      'title': p.basename(file.path),
       'created': file.created,
       'modified': file.modified,
       'size': file.size,
       'isVideo': file.isVideo,
+      'motion': _isMotionPhoto(file.path),
+      'selfie': _isSelfie(file.path),
     };
     // La sonda solo sabe leer cabeceras de imagen. Para el resto de
     // familias se guardan igualmente, pero sin dimensiones ni EXIF: en
@@ -296,28 +351,39 @@ class FileService {
       if (probe.height != null) row['height'] = probe.height!;
       if (probe.latitude != null) row['lat'] = probe.latitude!;
       if (probe.longitude != null) row['lng'] = probe.longitude!;
+      final loc = _locationLabel(probe.latitude, probe.longitude);
+      if (loc != null) row['loc'] = loc;
     } catch (_) {
       // Sonda best-effort: el archivo entra igual, sin metadatos.
     }
     return row;
   }
 
-  /// Helper para validar si un archivo es un archivo/vídeo válido y NO oculto.
-  static bool _isValidMediaFile(FileSystemEntity entity) {
+  /// Helper para validar si un archivo es válido (y oculto solo si [showHidden]).
+  static bool _isValidMediaFile(
+    FileSystemEntity entity, {
+    bool showHidden = false,
+  }) {
     if (entity is! File) return false;
 
-    // 1. Obtener el nombre del archivo
-    final filename = p.basename(entity.path);
+    // Los puntos 2 y 3 (oculto el archivo / dentro de una carpeta oculta)
+    // solo aplican si el usuario no ha pedido verlos. Con el ajuste
+    // activado entran también `.thumbnails` y `.trash`, que en Android
+    // guardan copias de todo lo multimedia.
+    if (!showHidden) {
+      // 1. Obtener el nombre del archivo
+      final filename = p.basename(entity.path);
 
-    // 2. Descartar si el archivo es oculto (empieza por '.')
-    if (filename.startsWith('.')) return false;
+      // 2. Descartar si el archivo es oculto (empieza por '.')
+      if (filename.startsWith('.')) return false;
 
-    // 3. Descartar si está dentro de una carpeta oculta (ej. .cache, .trash, .thumbnails)
-    final parts = p.split(entity.path);
-    if (parts.any(
-      (part) => part.startsWith('.') && part != '.' && part != '..',
-    )) {
-      return false;
+      // 3. Descartar si está dentro de una carpeta oculta (ej. .cache, .trash, .thumbnails)
+      final parts = p.split(entity.path);
+      if (parts.any(
+        (part) => part.startsWith('.') && part != '.' && part != '..',
+      )) {
+        return false;
+      }
     }
 
     // 4. Sin filtro de extensión: en un gestor de archivos TODO archivo es
