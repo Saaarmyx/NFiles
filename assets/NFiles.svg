@@ -1,13 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512">
   <defs>
     <style>
       .cls-1 {
-        fill: #fff;
-        filter: url(#drop-shadow-2);
+        isolation: isolate;
       }
 
       .cls-2 {
+        fill: #fff;
+        filter: url(#drop-shadow-2);
+        mix-blend-mode: luminosity;
+        opacity: .5;
+      }
+
+      .cls-3 {
         fill: url(#linear-gradient);
       }
     </style>
@@ -15,14 +21,18 @@
       <stop offset="0" stop-color="#0073e6"/>
       <stop offset="1" stop-color="#0073ff"/>
     </linearGradient>
-    <filter id="drop-shadow-2" x="76" y="104" width="360" height="304" filterUnits="userSpaceOnUse">
+    <filter id="drop-shadow-2" x="46" y="100" width="420" height="312" filterUnits="userSpaceOnUse">
       <feOffset dx="0" dy="0"/>
       <feGaussianBlur result="blur" stdDeviation="10"/>
-      <feFlood flood-color="#000" flood-opacity=".2"/>
+      <feFlood flood-color="#000" flood-opacity=".35"/>
       <feComposite in2="blur" operator="in"/>
       <feComposite in="SourceGraphic"/>
     </filter>
   </defs>
-  <rect class="cls-2" x="6" y="6" width="500" height="500" rx="110" ry="110"/>
-  <path class="cls-1" d="M368.32,377.68h-224.64c-20.65,0-37.44-16.79-37.44-37.44v-102.96h299.51v102.96c0,20.65-16.79,37.44-37.44,37.44ZM405.76,209.2H106.24v-37.44c0-20.65,16.79-37.44,37.44-37.44h81.14c8.07,0,15.97,2.63,22.46,7.49l22.46,16.85c3.22,2.46,7.2,3.74,11.23,3.74h87.34c20.65,0,37.44,16.79,37.44,37.44v9.36Z"/>
+  <g class="cls-1">
+    <g id="Layer_1" data-name="Layer 1">
+      <rect class="cls-3" x="6" y="6" width="500" height="500" rx="110" ry="110"/>
+      <path class="cls-2" d="M378.4,239.46c2.31-6.02,3.6-12.6,3.6-19.46,0-29.81-24.19-54-54-54-11.08,0-21.43,3.38-29.98,9.11-15.58-27-44.66-45.11-78.02-45.11-49.72,0-90,40.27-90,90,0,1.52.06,3.04.11,4.56-31.5,11.08-54.11,41.12-54.11,76.44,0,44.72,36.28,81,81,81h207c39.77,0,72-32.23,72-72,0-34.82-24.75-63.9-57.6-70.54Z"/>
+    </g>
+  </g>
 </svg>
