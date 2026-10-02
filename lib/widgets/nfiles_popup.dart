@@ -3,9 +3,9 @@
 // Los dos popups ⋮ de la topbar.
 //
 // Son DOS menús distintos, no uno con secciones variables: Recientes actúa
-// sobre la lista de archivos (transferir, espacio, ajustes) y Explorar
-// sobre la navegación (cómo se ve y cómo se ordena). Mezclarlos obligaría
-// al usuario a leer opciones que no aplican a lo que tiene delante.
+// sobre la lista (modo de vista + ajustes) y Explorar sobre las categorías
+// (cómo se ve y cómo se ordena). Mezclarlos obligaría al usuario a leer
+// opciones que no aplican a lo que tiene delante.
 //
 // Las filas multiválor son [icono + label + switch]: el tap en el switch lo
 // consume su propio reconocedor y el tap en la fila llega al callback. Si se
@@ -69,53 +69,50 @@ PopupMenuItem<String> popupSwitch({
     ),
   );
 }
-/// Popup de "Recientes": transferir, espacio, ajustes.
+/// Popup de "Recientes": modo de vista (por fecha / compacto) + ajustes
+/// (cuenta, configuración).
 List<PopupMenuEntry<String>> buildRecentPopupItems(
-  BuildContext context,
   FilesController controller,
+  VoidCallback onOpenAccount,
   VoidCallback onOpenSettings,
 ) {
   return [
-    popupHeader('ACCIONES'),
-    PopupMenuItem<String>(
-      onTap: () {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(
-            const SnackBar(content: Text('Transferencias: sin cola activa')),
-          );
+    popupHeader('MODO DE VISTA'),
+    popupSwitch(
+      controller: controller,
+      label: 'Por fecha',
+      isSelected: () => controller.viewMode == FilesViewMode.byDate,
+      onToggle: () {
+        controller.setViewMode(FilesViewMode.byDate);
       },
-      child: const _MenuRow(
-        icon: Icons.swap_vert_circle_outlined,
-        label: 'Transferir archivos',
-      ),
     ),
-    PopupMenuItem<String>(
-      onTap: () {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              content: Text(
-                'Espacio: ${controller.totalFormattedSize} '
-                'en ${controller.visibleFiles.length} archivos',
-              ),
-            ),
-          );
+    popupSwitch(
+      controller: controller,
+      label: 'Compacto',
+      isSelected: () => controller.viewMode == FilesViewMode.compact,
+      onToggle: () {
+        controller.setViewMode(FilesViewMode.compact);
       },
-      child: const _MenuRow(
-        icon: Icons.storage_outlined,
-        label: 'Espacio',
-      ),
     ),
     popupGap(),
+    popupHeader('AJUSTES'),
+    PopupMenuItem<String>(
+      onTap: onOpenAccount,
+      child: const _MenuRow(
+        icon: Icons.person_outlined,
+        label: 'Cuenta',
+      ),
+    ),
     PopupMenuItem<String>(
       onTap: onOpenSettings,
-      child: const _MenuRow(icon: Icons.settings_outlined, label: 'Ajustes'),
+      child: const _MenuRow(
+        icon: Icons.settings_outlined,
+        label: 'Configuración',
+      ),
     ),
   ];
 }
-/// Popup de "Explorar": modo de vista y orden.
+/// Popup de "Explorar": modo de vista (lista / cuadrícula) + orden (A→Z).
 List<PopupMenuEntry<String>> buildExplorePopupItems(
   FilesController controller,
 ) {
@@ -142,35 +139,23 @@ List<PopupMenuEntry<String>> buildExplorePopupItems(
     popupSwitch(
       controller: controller,
       label: 'A → Z',
-      isSelected: () => controller.categorySort == CategorySort.az,
+      isSelected: () =>
+          controller.listingField == ListingSortField.name &&
+          controller.listingDirection == SortDirection.asc,
       onToggle: () {
-        controller.setCategorySort(CategorySort.az);
+        controller.setListingField(ListingSortField.name);
+        controller.setListingDirection(SortDirection.asc);
       },
     ),
     popupSwitch(
       controller: controller,
       label: 'Z → A',
-      isSelected: () => controller.categorySort == CategorySort.za,
+      isSelected: () =>
+          controller.listingField == ListingSortField.name &&
+          controller.listingDirection == SortDirection.desc,
       onToggle: () {
-        controller.setCategorySort(CategorySort.za);
-      },
-    ),
-    popupGap(),
-    popupHeader('EXPLORAR'),
-    popupSwitch(
-      controller: controller,
-      label: 'Compacto',
-      isSelected: () => controller.exploreViewMode == ExploreViewMode.compact,
-      onToggle: () {
-        controller.setExploreViewMode(ExploreViewMode.compact);
-      },
-    ),
-    popupSwitch(
-      controller: controller,
-      label: 'Por grupo',
-      isSelected: () => controller.exploreViewMode == ExploreViewMode.grouped,
-      onToggle: () {
-        controller.setExploreViewMode(ExploreViewMode.grouped);
+        controller.setListingField(ListingSortField.name);
+        controller.setListingDirection(SortDirection.desc);
       },
     ),
   ];

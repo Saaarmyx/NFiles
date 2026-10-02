@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:NexoraUi/NexoraUi.dart';
 
 import '../models/file_model.dart';
+import 'thumb_image.dart';
 
 class FileTile extends StatelessWidget {
   final String path;
@@ -35,6 +36,14 @@ class FileTile extends StatelessWidget {
   /// Silencia las insignias (para listas de selección compactas).
   final bool showBadges;
 
+  /// Miniatura ya generada en disco por el motor nativo, o `null`.
+  ///
+  /// La resuelve el controlador antes de pintar. Cuando viene, la casilla
+  /// pinta el JPEG de la caché en vez de decodificar el archivo entero: en
+  /// una cuadrícula con 300 fichas, cargar un APK o un PDF en crudo por
+  /// ficha es lo que hace que el scroll se atasque.
+  final String? thumbnailPath;
+
   const FileTile({
     super.key,
     required this.path,
@@ -45,6 +54,7 @@ class FileTile extends StatelessWidget {
     this.file,
     this.selected,
     this.showBadges = true,
+    this.thumbnailPath,
   });
 
   bool get _effectiveIsVideo => file?.isVideo ?? isVideo;
@@ -56,19 +66,45 @@ class FileTile extends StatelessWidget {
     final video = _effectiveIsVideo;
     final inSelection = selected != null;
     final badges = showBadges && !inSelection ? _buildBadges(video) : const <NImageBadge>[];
+    final thumb = thumbnailPath;
 
     return NImageTile(
       selected: selected,
-      image: video
-          ? const NVideoThumb()
-          : Image.file(
-              File(_effectivePath),
-              width: width,
-              fit: fit,
-              cacheWidth: cacheWidth,
-              errorBuilder: (context, error, stack) => const NImageFallback(),
-            ),
+      image: _buildImage(video, thumb),
       badges: badges,
+    );
+  }
+
+  /// Decide qué se pinta en la casilla.
+  ///
+  /// Tres casos, en este orden:
+  ///
+  /// 1. **Vídeo sin miniatura**: el `NVideoThumb` de siempre, con su icono de
+  ///    cámara. Es un marcador conocido y no se intenta adivinar el fotograma.
+  /// 2. **Con miniatura nativa** (un APK, un PDF): el JPEG de la caché. Se
+  ///    decodifica 300x300 en vez de un archivo que puede pesar cientos de
+  ///    megas, y con fundido al entrar.
+  /// 3. **Foto sin miniatura**: el archivo original, con `cacheWidth` para
+  ///    que el decodificador reduzca durante la lectura.
+  Widget _buildImage(bool video, String? thumb) {
+    if (thumb != null) {
+      return ThumbImage(
+        path: thumb,
+        isThumb: true,
+        fit: fit,
+        // El motor no decodifica lo que no entiende: deja un marcador de
+        // texto, y eso hay que sustituirlo por el mosaico del kit, no
+        // intentar pintarlo como imagen.
+        errorBuilder: (context, _, _) => const NImageFallback(),
+      );
+    }
+    if (video) return const NVideoThumb();
+    return Image.file(
+      File(_effectivePath),
+      width: width,
+      fit: fit,
+      cacheWidth: cacheWidth,
+      errorBuilder: (context, error, stack) => const NImageFallback(),
     );
   }
 

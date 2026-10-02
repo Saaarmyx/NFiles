@@ -6,13 +6,13 @@
 // NO es una miniatura: en un gestor de archivos conviven PDF, MP3 y APK,
 // y una rejilla de miniaturas solo funciona para imágenes. El prefijo del
 // nombre en gris da el matiz de cada tipo sin Portraites/Mountain variantes.
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:NexoraUi/NexoraUi.dart';
 
 import 'package:NexoraCore/NexoraCore.dart';
 import '../models/file_model.dart';
+import 'thumb_image.dart';
 
 /// Fila de un archivo.
 class FileRow extends StatelessWidget {
@@ -24,12 +24,20 @@ class FileRow extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
+  /// Miniatura ya generada en disco por el motor nativo, o `null`.
+  ///
+  /// La resuelve el controlador antes de pintar: generarla es trabajo
+  /// asíncrono con isolate y un `build` no puede esperarlo. Cuando viene,
+  /// la ficha pinta el JPEG de la caché en vez del icono de familia.
+  final String? thumbnailPath;
+
   const FileRow({
     super.key,
     required this.file,
     this.selected,
     this.onTap,
     this.onLongPress,
+    this.thumbnailPath,
   });
 
   @override
@@ -56,6 +64,7 @@ class FileRow extends StatelessWidget {
               path: file.path,
               isVideo: file.isVideo,
               selected: selected,
+              thumbnailPath: thumbnailPath,
             ),
             const SizedBox(width: NSpacing.spaceSm),
             Expanded(
@@ -114,10 +123,18 @@ class _FileIconTile extends StatelessWidget {
   final bool isVideo;
   final bool? selected;
 
+  /// Miniatura ya generada en disco por el motor nativo, o `null`.
+  ///
+  /// Se pasa desde el controlador en vez de pedirla aquí: generarla es
+  /// trabajo asíncrono con isolate, y un `build` no puede esperarlo. El
+  /// controlador la resuelve antes de pintar y este widget solo la muestra.
+  final String? thumbnailPath;
+
   const _FileIconTile({
     required this.path,
     required this.isVideo,
     required this.selected,
+    this.thumbnailPath,
   });
 
   static const _size = 44.0;
@@ -125,22 +142,27 @@ class _FileIconTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isMedia = isVideo || kindForPath(path) == FileKind.image;
+    // Hay miniatura nativa para este archivo (un APK, un PDF, un vídeo):
+    // se pinta el JPEG de la caché en vez del icono de familia.
+    final hasThumb = thumbnailPath != null;
 
     Widget child;
-    if (!isMedia) {
+    if (!isMedia && !hasThumb) {
       child = Icon(
         iconForPath(path),
         size: 22,
         color: NOptionTileColors.accentOf(context),
       );
     } else {
-      child = Image.file(
-        File(path),
+      // `Image.file` con la miniatura cuando la hay, con el original cuando
+      // es una foto o un vídeo. El `errorBuilder` es lo que hace que un
+      // archivo roto caiga al icono en vez de dejar un hueco gris.
+      final imagePath = thumbnailPath ?? path;
+      child = ThumbImage(
+        path: imagePath,
         fit: BoxFit.cover,
-        width: _size,
-        height: _size,
-        errorBuilder: (context, _, _) =>
-            Icon(iconForPath(path), size: 22, color: context.nMutedTextColor),
+        isThumb: hasThumb,
+        fallbackIcon: iconForPath(path),
       );
     }
 
