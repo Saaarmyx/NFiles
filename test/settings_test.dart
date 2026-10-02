@@ -54,28 +54,22 @@ void main() {
     expect(find.byType(NAboutContent), findsOneWidget);
   });
 
-  test('la base de ajustes incluye Idioma solo si se cablea', () {
-    // Con `onLanguageTap` nulo el item no aparece: es lo que permite que
-    // las apps sin soporte de idioma (NPhotos) no cambien de aspecto.
-    final sinIdioma = NSettingsScreen.buildNexoraBaseSection(
-      onAccountTap: () {},
+  test('la base de ajustes es fija: sin Cuenta ni Idioma', () {
+    // La cuenta vive en NCloud y el idioma donde se usa: la base ya no
+    // acepta callbacks para ninguno de los dos.
+    final base = NSettingsScreen.buildNexoraBaseSection(
+      appName: 'NFiles',
       onPerformanceTap: () {},
       onPersonalizationTap: () {},
       onAboutTap: () {},
     );
-    final conIdioma = NSettingsScreen.buildNexoraBaseSection(
-      onAccountTap: () {},
-      onPerformanceTap: () {},
-      onPersonalizationTap: () {},
-      onAboutTap: () {},
-      onLanguageTap: () {},
-    );
 
-    bool tieneIdioma(NSettingsSection s) =>
-        s.items.whereType<NNavigationItem>().any((i) => i.title == 'Idioma');
+    expect(base.title, 'Ajustes adicionales');
 
-    expect(tieneIdioma(sinIdioma), isFalse);
-    expect(tieneIdioma(conIdioma), isTrue);
+    final titulos = base.items.whereType<NNavigationItem>().map((i) => i.title);
+    expect(titulos, ['Rendimiento', 'Personalización', 'Sobre NFiles']);
+    expect(titulos, isNot(contains('Cuenta')));
+    expect(titulos, isNot(contains('Idioma')));
   });
 
   testWidgets('la pantalla de permisos delega en el núcleo', (tester) async {
